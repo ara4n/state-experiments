@@ -13,6 +13,9 @@ import psycopg2
 # Disadvantage is that we can't cache state groups, but perhaps it'll be so fast we don't need to.
 # ...or we can create the state group optimisation in the cache rather than the DB on demand
 # by factoring out commonality in the results coughed up by the DB.
+# Other problem is that state resets which thrash the state of the room will cause the table to grow, but
+# it will still be way better than the previous incarnation. Plus we may be able to detect and throw away
+# thrashing as part of mitigating state spam.
 
 DB_CONFIG = {
     # 'host': 'localhost',
@@ -95,8 +98,8 @@ try:
             print("Failed to update state")
         c.close()
 
-    # todo: batch this to stop blocking up the master?
-    cursor.execute("SELECT id FROM state_groups order by id")
+    room_id = '!kxwQeJPhRigXSZrHqf:matrix.org'
+    cursor.execute("SELECT id FROM state_groups where room_id=%s order by id", [room_id])
     state_groups = [ row[0] for row in cursor.fetchall() ]
     cursor.close()
 
