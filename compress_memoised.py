@@ -97,59 +97,69 @@ try:
             sg = state_groups[sg_id]
             if sg_id in prev_edges:
                 for prev_id in prev_edges[sg_id]:
-                    # TODO: memoize here to avoid recursion
-                    # TODO: we can remove older SGs here if this was the only
-                    # place we referred to them
-                    # print (f"merging: {get_state(prev_id)} with {sg}")
-                    sg = get_state_dict(prev_id) | sg
+                    if prev_id in state_groups:
+                        # print (f"merging: {get_state(prev_id)} with {sg}")
+                        sg = get_state_dict(prev_id) | sg
+
+                        # we can remove older SGs here if this was the only
+                        # place we referred to them, effectively memoizing our
+                        # results
+                        if (len(next_edges[prev_id]) == 1):
+                            print (f"pruning {prev_id}")
+                            state_groups[sg_id] = sg
+                            del state_groups[prev_id]
+                            # TODO: we could also prune prev_id from prev_edges[sg_id] at this point
+                            # to avoid trying to traverse into it, but it's a unlikely to help much
+
         else:
             sg = {}
         return sg
 
     state_set = set()
     last_sg_id = None
+    type_dict = {}
     sg = {}
-    for (sg_id, event_type, state_key, event_id) in cursor.fetchall():
-        print()
-        print (sg_id, event_type, state_key, event_id)
+    while True:
+        rows = cursor.fetchmany(10000)
+        if not rows:
+            break
+        for (sg_id, event_type, state_key, event_id) in rows:
+            print()
+            print (sg_id, event_type, state_key, event_id)
+            type_dict[event_id] = (event_type, state_key)
 
-        def handle_last_sg(state_set):
-            state_groups[last_sg_id] = sg
-            #print ("sg: ", sg)
-            #print ("state: ", get_state(last_sg_id))
+            def handle_last_sg(state_set):
+                state_groups[last_sg_id] = sg
+                #print ("sg: ", sg)
+                #print ("state: ", get_state(last_sg_id))
 
-            # FIXME: inefficient to build a new event_id -> type,state_key dict every time
-            # we should keep it around instead
-            state_dict = get_state_dict(last_sg_id)
-            type_dict = {v: k for k, v in state_dict.items()}
+                new_state_set = set(get_state_dict(last_sg_id).values())
+                #print(f"last_sg_id: {last_sg_id}, state_groups[] = {sg}, new_state_set: {new_state_set}")
+                #print ("state_set: ", state_set)
+                #print ("new_state_set: ", new_state_set)
 
-            new_state_set = set(state_dict.values())
-            #print(f"last_sg_id: {last_sg_id}, state_groups[] = {sg}, new_state_set: {new_state_set}")
-            #print ("state_set: ", state_set)
-            #print ("new_state_set: ", new_state_set)
+                new_ids = new_state_set - state_set
+                gone_ids = state_set - new_state_set
+                print("new_ids", new_ids)
+                print("gone_ids", gone_ids)
+                for id in new_ids:
+                    (et, esk) = type_dict[id]
+                    add_state(last_sg_id, id, et, esk)
+                for id in gone_ids:
+                    mark_state_as_gone(last_sg_id, id)
+                return new_state_set
 
-            new_ids = new_state_set - state_set
-            gone_ids = state_set - new_state_set
-            print("new_ids", new_ids)
-            print("gone_ids", gone_ids)
-            for id in new_ids:
-                (et, esk) = type_dict[id]
-                add_state(last_sg_id, id, et, esk)
-            for id in gone_ids:
-                mark_state_as_gone(last_sg_id, id)
-            return new_state_set
+            # build up the event IDs in this state group
+            if sg_id == last_sg_id:
+                sg[(event_type, state_key)] = event_id
+                continue
+            else:
+                if last_sg_id is not None:
+                    state_set = handle_last_sg(state_set)
 
-        # build up the event IDs in this state group
-        if sg_id == last_sg_id:
-            sg[(event_type, state_key)] = event_id
-            continue
-        else:
-            if last_sg_id is not None:
-                state_set = handle_last_sg(state_set)
-
-            # get going on the new sg
-            last_sg_id = sg_id
-            sg = { (event_type, state_key): event_id }
+                # get going on the new sg
+                last_sg_id = sg_id
+                sg = { (event_type, state_key): event_id }
 
     # flush the last sg
     handle_last_sg(state_set)
