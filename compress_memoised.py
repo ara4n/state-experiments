@@ -75,27 +75,35 @@ try:
 
     cursor = conn.cursor()
 
-    # grab the SG DAG into RAM for speedy access.
+    # grab the SG DAG into RAM for speedy access. This is fast.
     logger.info("loading SG DAG")
     cursor.execute("SELECT state_group, prev_state_group FROM state_groups sg JOIN state_group_edges sge ON sg.id = sge.state_group where room_id=%s", [room_id])
     next_edges = {} # next_edges[prev_id] = [ next_ids ]
     prev_edges = {} # prev_edges[next_id] = [ prev_ids ]
+    sg_id_set = set() # set of all state group IDs
     for row in cursor.fetchall():
         next_sg = next_edges.setdefault(row[1], [])
         next_sg.append(row[0])
         # N.B. at least for uncompressed state groups, it seems each SG only has a single prev SG.
         prev_sg = prev_edges.setdefault(row[0], [])
         prev_sg.append(row[1])
+        sg_id_set.add(row[0])
+        sg_id_set.add(row[1])
 
-    # grab the ordered SGs and their state in one swoop, so we don't have to keep fishing out state events
-    # we do the join so we can benefit from state_groups' pkey index on id when ordering.
-    # XXX: this optimisation doesn't work.
-    # todo: split into batches to avoid a massive txn
+    # grab the ordered SGs and their state in one swoop, so we don't have to keep fishing out state events.
+    # Problem: selects from sg or sgs table ordered by SG ID is slow as there's no index on both room_id and SG ID.
+    #
+    # so instead, let's load in batches of 1000 (which is good anyway), explicitly querying the rows from the
+    # ordered state_group_edges table.
     logger.info("loading SG state")
-    cursor.execute("SELECT id, type, state_key, sgs.event_id FROM state_groups sg JOIN state_groups_state sgs ON sg.id=sgs.state_group WHERE sg.room_id=%s ORDER BY id", [room_id])
 
     # state_groups[sg_id] = { (event_type, state_key): event_id }
     state_groups = {}
+
+    state_set = set()
+    last_sg_id = None
+    type_dict = {}
+    sg = {}
 
     def get_state_dict(sg_id):
         if sg_id in state_groups:
@@ -137,15 +145,20 @@ try:
             sg = {}
         return sg
 
-    state_set = set()
-    last_sg_id = None
-    type_dict = {}
-    sg = {}
-    while True:
-        rows = cursor.fetchmany(10000)
-        if not rows:
-            break
-        for (sg_id, event_type, state_key, event_id) in rows:
+    sg_id_list = sorted(sg_id_set)
+    del sg_id_set
+    for i in range(0, len(sg_id_list), 1000):
+        slice = sg_id_list[i:i+1000]
+        #print (slice)
+
+        cursor.execute("""
+            SELECT state_group, type, state_key, event_id
+            FROM state_groups_state 
+            WHERE state_group = ANY(%s)
+            ORDER BY state_group
+        """, [slice])
+
+        for (sg_id, event_type, state_key, event_id) in cursor.fetchall():
             print()
             print("Checking", sg_id, event_type, state_key, event_id)
             print()
