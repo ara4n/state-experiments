@@ -49,18 +49,17 @@ try:
     lifetimes = {} # event_id -> ( start_sg, end_sg )
 
     def add_state(sg_id, event_id, event_type, state_key):
+        print (f"adding {sg_id} {event_id} {event_type} {state_key}")
         row = [sg_id, None, event_id, event_type, state_key]
         state_table.append(row)
         lifetimes[event_id] = row
 
     def mark_state_as_gone(last_sg_id, event_id):
+        print (f"marking {event_id} as gone in {last_sg_id}")
         row = lifetimes[event_id]
         row[1] = last_sg_id
 
     def dump_state():
-        sql = """
-        
-        """
         c = conn.cursor()
         execute_values(
             c,
@@ -80,6 +79,7 @@ try:
     for row in cursor.fetchall():
         next_sg = next_edges.setdefault(row[1], [])
         next_sg.append(row[0])
+        # N.B. at least for uncompressed state groups, it seems each SG only has a single prev SG.
         prev_sg = prev_edges.setdefault(row[0], [])
         prev_sg.append(row[1])
 
@@ -96,7 +96,8 @@ try:
         if sg_id in state_groups:
             sg = state_groups[sg_id]
             if sg_id in prev_edges:
-                for prev_id in prev_edges[sg_id]:
+                prevs = prev_edges[sg_id]
+                for prev_id in prevs:
                     if prev_id in state_groups:
                         # print (f"merging: {get_state(prev_id)} with {sg}")
                         sg = get_state_dict(prev_id) | sg
@@ -105,12 +106,22 @@ try:
                         # place we referred to them, effectively memoizing our
                         # results
                         if (len(next_edges[prev_id]) == 1):
-                            print (f"pruning {prev_id}")
+                            print (f"merging and pruning {prev_id}")
                             state_groups[sg_id] = sg
                             del state_groups[prev_id]
                             # TODO: we could also prune prev_id from prev_edges[sg_id] at this point
                             # to avoid trying to traverse into it, but it's a unlikely to help much
-
+                        else:
+                            # having merged in prev_id, we can delete it from
+                            # next_edges, so we prune unneeded sg's more aggressively
+                            print (f"merging {prev_id} into {sg_id}")
+                            state_groups[sg_id] = sg
+                            print(f"before pruning next_edges, {next_edges[prev_id]}")
+                            next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
+                            print(f"after pruning next_edges, {next_edges[prev_id]}")
+                            print(f"before pruning prev_edges, {prev_edges[sg_id]}")
+                            prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
+                            print(f"after pruning prev_edges, {prev_edges[sg_id]}")
         else:
             sg = {}
         return sg
@@ -125,11 +136,16 @@ try:
             break
         for (sg_id, event_type, state_key, event_id) in rows:
             print()
-            print (sg_id, event_type, state_key, event_id)
+            print("Checking", sg_id, event_type, state_key, event_id)
+            print()
             type_dict[event_id] = (event_type, state_key)
 
             def handle_last_sg(state_set):
                 state_groups[last_sg_id] = sg
+                print(f"Handling sg {last_sg_id}")
+                print(f"prev_edges[{last_sg_id}] = { prev_edges.get(last_sg_id, None) }")
+                for prev in prev_edges.get(last_sg_id, []):
+                    print(f"next_edges[{prev}] = { next_edges.get(prev, None) }")
                 #print ("sg: ", sg)
                 #print ("state: ", get_state(last_sg_id))
 
