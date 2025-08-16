@@ -105,23 +105,18 @@ try:
                         # we can remove older SGs here if this was the only
                         # place we referred to them, effectively memoizing our
                         # results
+                        print (f"merging sg {prev_id} into sg {sg_id}")
+                        state_groups[sg_id] = sg
                         if (len(next_edges[prev_id]) == 1):
-                            print (f"merging and pruning {prev_id}")
-                            state_groups[sg_id] = sg
                             del state_groups[prev_id]
-                            # TODO: we could also prune prev_id from prev_edges[sg_id] at this point
-                            # to avoid trying to traverse into it, but it's a unlikely to help much
+                            # no point in deleting next_edges given we won't refer to this SG again
+                            # but we should remove the prev_edge for the node we just merged in.
+                            # also, no point in deleting prev_edges given if they point to deleted
+                            # SGs we'll crap out anyway.
+                            # prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
                         else:
-                            # having merged in prev_id, we can delete it from
-                            # next_edges, so we prune unneeded sg's more aggressively
-                            print (f"merging {prev_id} into {sg_id}")
-                            state_groups[sg_id] = sg
-                            print(f"before pruning next_edges, {next_edges[prev_id]}")
                             next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
-                            print(f"after pruning next_edges, {next_edges[prev_id]}")
-                            print(f"before pruning prev_edges, {prev_edges[sg_id]}")
                             prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
-                            print(f"after pruning prev_edges, {prev_edges[sg_id]}")
         else:
             sg = {}
         return sg
