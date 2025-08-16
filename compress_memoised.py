@@ -3,6 +3,10 @@
 import psycopg2
 from psycopg2.extras import execute_values
 import logging
+import tracemalloc
+import gc
+
+# tracemalloc.start()
 
 # go through the state groups in order of SG ID
 # create a new table called state:
@@ -84,7 +88,8 @@ try:
         prev_sg.append(row[1])
 
     # grab the ordered SGs and their state in one swoop, so we don't have to keep fishing out state events
-    # we do the join so we can benefit from state_groups' pkey index on id when ordering
+    # we do the join so we can benefit from state_groups' pkey index on id when ordering.
+    # XXX: this optimisation doesn't work.
     # todo: split into batches to avoid a massive txn
     logger.info("loading SG state")
     cursor.execute("SELECT id, type, state_key, sgs.event_id FROM state_groups sg JOIN state_groups_state sgs ON sg.id=sgs.state_group WHERE sg.room_id=%s ORDER BY id", [room_id])
@@ -104,19 +109,30 @@ try:
 
                         # we can remove older SGs here if this was the only
                         # place we referred to them, effectively memoizing our
-                        # results
+                        # results.
+                        # on #nvi, this increases our speed by 2x and reduces our peak RAM by 2.5x
                         print (f"merging sg {prev_id} into sg {sg_id}")
                         state_groups[sg_id] = sg
-                        if (len(next_edges[prev_id]) == 1):
+
+                        # if (len(next_edges[prev_id]) == 1):
+                        #     print (f"purging fully merged sg {prev_id}")
+                        #     del state_groups[prev_id]
+                        #     # as an optimisation, we deliberately skip clearing up next_edges and prev_edges as
+                        #     # we know we won't refer to this SG again.
+                        #     # In practice, this seems to buy us very little (but costs a bunch of RAM)
+                        # else:
+                        #     next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
+                        #     prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
+
+                        next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
+                        prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
+                        if (len(next_edges[prev_id]) == 0):
+                            print (f"purging fully merged sg {prev_id}")
                             del state_groups[prev_id]
-                            # no point in deleting next_edges given we won't refer to this SG again
-                            # but we should remove the prev_edge for the node we just merged in.
-                            # also, no point in deleting prev_edges given if they point to deleted
-                            # SGs we'll crap out anyway.
-                            # prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
-                        else:
-                            next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
-                            prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
+
+            if sg_id not in next_edges:
+                print (f"purging dead-end sg {sg_id}")
+                del state_groups[sg_id]
         else:
             sg = {}
         return sg
@@ -175,6 +191,14 @@ try:
     # flush the last sg
     handle_last_sg(state_set)
 
+    # import pprint
+    # print("state_groups")
+    # pprint.pp(state_groups)
+    # print("prev_edges")
+    # pprint.pp(prev_edges)
+    # print("next_edges")
+    # pprint.pp(next_edges)
+
     # finally, dump the state table to the DB.
     dump_state()
 
@@ -189,6 +213,13 @@ finally:
         cursor.close()
     if conn:
         conn.close()
+
+# print("gc memory", gc.collect())
+
+# current, peak = tracemalloc.get_traced_memory()
+# print(f"Current memory usage: {current / 1024 / 1024:.2f} MB")
+# print(f"Peak memory usage: {peak / 1024 / 1024:.2f} MB")
+# tracemalloc.stop()
 
 # Our existing synapse schema, for reference
 
