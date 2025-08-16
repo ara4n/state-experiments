@@ -93,7 +93,7 @@ try:
     # grab the ordered SGs and their state in one swoop, so we don't have to keep fishing out state events.
     # Problem: selects from sg or sgs table ordered by SG ID is slow as there's no index on both room_id and SG ID.
     #
-    # so instead, let's load in batches of 1000 (which is good anyway), explicitly querying the rows from the
+    # so instead, let's load in batches of 5000 (which is good anyway), explicitly querying the rows from the
     # ordered state_group_edges table.
     logger.info("loading SG state")
 
@@ -147,8 +147,9 @@ try:
 
     sg_id_list = sorted(sg_id_set)
     del sg_id_set
-    for i in range(0, len(sg_id_list), 1000):
-        slice = sg_id_list[i:i+1000]
+    batch_size = 5000
+    for i in range(0, len(sg_id_list), batch_size):
+        slice = sg_id_list[i:i+batch_size]
         #print (slice)
 
         cursor.execute("""
