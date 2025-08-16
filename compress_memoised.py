@@ -39,6 +39,12 @@ DB_CONFIG = {
 #   type text,
 #   state_key text
 # );
+#
+# CREATE INDEX matthew_state_end_sg_id_start_sg_id_room_id_idx ON matthew_state (end_sg_id, start_sg_id, room_id);
+# took 98s on a 13GB table on matrix.org
+#
+# partial index specifically on NULLs
+# CREATE INDEX matthew_state_room_id_start_sg_id_null_end_sg_id_idx ON matthew_state (room_id, start_sg_id) WHERE end_sg_id IS NULL;
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
@@ -69,6 +75,7 @@ try:
             c,
             "INSERT INTO state (start_sg_id, end_sg_id, event_id, type, state_key) VALUES %s",
             state_table,
+            page_size=1000,
         )
         c.execute("UPDATE state set room_id=%s", [room_id])
         c.close()
@@ -147,7 +154,7 @@ try:
 
     sg_id_list = sorted(sg_id_set)
     del sg_id_set
-    batch_size = 5000
+    batch_size = 100
     for i in range(0, len(sg_id_list), batch_size):
         slice = sg_id_list[i:i+batch_size]
         #print (slice)
@@ -213,6 +220,17 @@ try:
     # print("next_edges")
     # pprint.pp(next_edges)
 
+    # # Take heap snapshot before dumping
+    # from pympler import tracker, muppy, summary
+    #
+    # print("Taking heap snapshot...")
+    # heap = muppy.get_objects()
+    # sum_stats = summary.summarize(heap)
+    #
+    # # Print top memory consumers
+    # print("=== HEAP ANALYSIS BEFORE DUMP_STATE ===")
+    # summary.print_(sum_stats, limit=15)
+    
     # finally, dump the state table to the DB.
     dump_state()
 
@@ -221,6 +239,36 @@ try:
     #
     # or for historic state, with:
     # select * from state where start_sg_id <= 747138778 and (end_sg_id is null or end_sg_id > 747138778);
+    #
+    # or to use the indexes more efficiently:
+    #
+    # SELECT event_id FROM matthew_state 
+    # WHERE room_id='!OGEhHVWSdvArJzumhm:matrix.org' 
+    # AND start_sg_id <= 960720207 
+    # AND end_sg_id IS NULL
+    # UNION ALL
+    # SELECT event_id FROM matthew_state 
+    # WHERE room_id='!OGEhHVWSdvArJzumhm:matrix.org' 
+    # AND start_sg_id <= 960720207 
+    # AND end_sg_id > 960720207;
+    #
+    # This takes ~150ms on matrix.org (with a table with 77M rows in it due to state resets flipflopping state)
+    # Relative to ~510ms for the recursive query (albeit on a *much* bigger table):
+    #
+    # WITH RECURSIVE sgs(state_group) AS (
+    #     VALUES(960720207::bigint)
+    #     UNION ALL
+    #     SELECT prev_state_group FROM matrix.state_group_edges e, sgs s
+    #     WHERE s.state_group = e.state_group
+    # )
+    # SELECT DISTINCT ON (type, state_key)
+    #     event_id
+    #     FROM matrix.state_groups_state
+    #     WHERE state_group IN (
+    #         SELECT state_group FROM sgs
+    #     )
+    #     ORDER BY type, state_key, state_group DESC;
+
 
 finally:
     if cursor:
