@@ -41,10 +41,17 @@ DB_CONFIG = {
 # );
 #
 # CREATE INDEX matthew_state_end_sg_id_start_sg_id_room_id_idx ON matthew_state (end_sg_id, start_sg_id, room_id);
-# took 98s on a 13GB table on matrix.org
+# took 50s on a 13GB table on matrix.org to create a ~1GB index
 #
 # partial index specifically on NULLs
 # CREATE INDEX matthew_state_room_id_start_sg_id_null_end_sg_id_idx ON matthew_state (room_id, start_sg_id) WHERE end_sg_id IS NULL;
+#
+# CREATE INDEX matthew_state_event_id_idx ON matthew_state (event_id);
+# just for rapid searching on events; this is big though (~1G)
+#
+# CREATE INDEX matthew_state_room_id_idx ON matthew_state (room_id);
+# just for rapid searching on rooms
+
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
@@ -251,6 +258,8 @@ try:
     # WHERE room_id='!OGEhHVWSdvArJzumhm:matrix.org' 
     # AND start_sg_id <= 960720207 
     # AND end_sg_id > 960720207;
+    #
+    # (An alternative would be to set end_sg_id as MAX_BIGINT rather than NULL to avoid the partial indices)
     #
     # This takes ~150ms on matrix.org (with a table with 77M rows in it due to state resets flipflopping state)
     # Relative to ~510ms for the recursive query (albeit on a *much* bigger table):
