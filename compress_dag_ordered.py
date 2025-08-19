@@ -353,15 +353,16 @@ type_dict = {} # type_dict[evemt_id] = (type,key) for remembering the type of a 
 # 8436 rows (so only a saving of 222 rows)
 # Meanwhile, we seem to save about 16 flipflops on the worst state (down from 46 to 30). So it's not great.
 
-chunks = find_chunks(sg_id_set, next_edges)
-chunks_as_list = []
-for chunk in chunks:
-    chunks_as_list.append(sorted(list(chunk)))
-chunks_as_list.sort(key=lambda chunk: chunk[0])
-for chunk in chunks_as_list:
-    logger.info(f"len={len(chunk)}, from={chunk[0]}, to={chunk[-1]}, forked from sg {prev_edges[chunk[0]] if chunk[0] in prev_edges else None}")
-
-sys.exit()
+# to dump the chunks:
+# chunks = find_chunks(sg_id_set, next_edges)
+# chunks_as_list = []
+# for chunk in chunks:
+#     chunks_as_list.append(sorted(list(chunk)))
+# chunks_as_list.sort(key=lambda chunk: chunk[0])
+# for chunk in chunks_as_list:
+#     logger.info(f"len={len(chunk)}, from={chunk[0]}, to={chunk[-1]}, forked from sg {prev_edges[chunk[0]] if chunk[0] in prev_edges else None}")
+#
+# sys.exit()
 
 sg_id_list = topological_sort_chunked(sg_id_set, next_edges)
 del sg_id_set
