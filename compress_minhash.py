@@ -42,7 +42,9 @@ DB_CONFIG = {
 #   type text,
 #   state_key text,
 #   minhash integer[], -- 128 minhash values
-#   lsh_bands integer[] -- 16 LSH bands (hashed from the above), so 16 hashes of 8 minhash values
+#   lsh_bands integer[], -- 16 LSH bands (hashed from the above), so 16 hashes of 8 minhash values
+#   add_count int,
+#   gone_count int
 # );
 #
 # CREATE INDEX matthew_state_end_sg_id_start_sg_id_room_id_idx ON matthew_state (end_sg_id, start_sg_id, room_id);
@@ -62,7 +64,7 @@ logger = logging.getLogger()
 
 logging.basicConfig(
     stream=sys.stdout,
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
 )
@@ -75,9 +77,9 @@ conn.set_session(autocommit=True)
 state_table = []
 lifetimes = {} # event_id -> ( start_sg, end_sg )
 
-def add_state(sg_id, event_id, event_type, state_key, minhash):
-    logger.debug(f"adding {sg_id} {event_id} {event_type} {state_key} {minhash}")
-    row = [sg_id, None, event_id, room_id, event_type, state_key, minhash]
+def add_state(sg_id, event_id, event_type, state_key, minhash, add_count, gone_count):
+    logger.debug(f"adding {sg_id} {event_id} {event_type} {state_key} {minhash} {add_count} {gone_count}")
+    row = [sg_id, None, event_id, room_id, event_type, state_key, minhash, add_count, gone_count]
     state_table.append(row)
     lifetimes[event_id] = row
 
@@ -90,7 +92,7 @@ def dump_state():
     c = conn.cursor()
     execute_values(
         c,
-        "INSERT INTO mhstate (start_sg_id, end_sg_id, event_id, room_id, type, state_key, minhash) VALUES %s",
+        "INSERT INTO mhstate (start_sg_id, end_sg_id, event_id, room_id, type, state_key, minhash, add_count, gone_count) VALUES %s",
         state_table,
         page_size=1000,
     )
@@ -137,7 +139,7 @@ def dump_state():
     # FROM mhstate s
     # LEFT JOIN state_group_edges sge ON sge.state_group=s.start_sg_id
     # ORDER BY start_sg_id;
-    
+
     c.close()
 
 cursor = conn.cursor()
@@ -167,32 +169,32 @@ def get_state_dict(sg_id):
                     # logger.debug(f"merging: {get_state(prev_id)} with {sg}")
                     sg = get_state_dict(prev_id) | sg
 
-        #             # we can remove older SGs here if this was the only
-        #             # place we referred to them, effectively memoizing our
-        #             # results.
-        #             # on #nvi, this increases our speed by 2x and reduces our peak RAM by 2.5x
-        #             logger.debug(f"merging sg {prev_id} into sg {sg_id}")
-        #             state_groups[sg_id] = sg
+                    # we can remove older SGs here if this was the only
+                    # place we referred to them, effectively memoizing our
+                    # results.
+                    # on #nvi, this increases our speed by 2x and reduces our peak RAM by 2.5x
+                    logger.debug(f"merging sg {prev_id} into sg {sg_id}")
+                    state_groups[sg_id] = sg
 
-        #             # if (len(next_edges[prev_id]) == 1):
-        #             #     logger.debug(f"purging fully merged sg {prev_id}")
-        #             #     del state_groups[prev_id]
-        #             #     # as an optimisation, we deliberately skip clearing up next_edges and prev_edges as
-        #             #     # we know we won't refer to this SG again.
-        #             #     # In practice, this seems to buy us very little (but costs a bunch of RAM)
-        #             # else:
-        #             #     next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
-        #             #     prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
+                    # if (len(next_edges[prev_id]) == 1):
+                    #     logger.debug(f"purging fully merged sg {prev_id}")
+                    #     del state_groups[prev_id]
+                    #     # as an optimisation, we deliberately skip clearing up next_edges and prev_edges as
+                    #     # we know we won't refer to this SG again.
+                    #     # In practice, this seems to buy us very little (but costs a bunch of RAM)
+                    # else:
+                    #     next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
+                    #     prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
 
-        #             next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
-        #             prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
-        #             if (len(next_edges[prev_id]) == 0):
-        #                 logger.debug(f"purging fully merged sg {prev_id}")
-        #                 del state_groups[prev_id]
+                    next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
+                    prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
+                    if (len(next_edges[prev_id]) == 0):
+                        logger.debug(f"purging fully merged sg {prev_id}")
+                        del state_groups[prev_id]
 
-        # if sg_id not in next_edges:
-        #     logger.debug(f"purging dead-end sg {sg_id}")
-        #     del state_groups[sg_id]
+        if sg_id not in next_edges:
+            logger.debug(f"purging dead-end sg {sg_id}")
+            del state_groups[sg_id]
     else:
         sg = {}
     return sg
@@ -212,6 +214,7 @@ state_set = set() # the set of event_ids in current state as of last_sg_id
 last_sg_id = None # the SG id being accumulated
 sg = {} # sg[(type,key)] = event_id. the current stategroup being accumulated (with id last_sg_id)
 type_dict = {} # type_dict[evemt_id] = (type,key) for remembering the type of a given event id
+last_gone_count = 0
 
 sg_id_list = sorted(sg_id_set)
 del sg_id_set
@@ -236,7 +239,7 @@ for i in range(0, len(sg_id_list), batch_size):
         logger.debug('')
         type_dict[event_id] = (event_type, state_key)
 
-        def handle_last_sg(state_set):
+        def handle_last_sg(state_set, last_gone_count):
             state_groups[last_sg_id] = sg
             logger.debug(f"Handling sg {last_sg_id}")
             logger.debug(f"prev_edges[{last_sg_id}] = { prev_edges.get(last_sg_id, None) }")
@@ -254,18 +257,30 @@ for i in range(0, len(sg_id_list), batch_size):
             gone_ids = state_set - new_state_set
             logger.debug(f"new_ids {new_ids}")
             logger.debug(f"gone_ids {gone_ids}")
+
+            logger.debug(f"len(new_state_set)={len(new_state_set)} len(state_set)={len(state_set)}")
+
+            mh = MinHash()
+            for e in new_state_set:
+                mh.update(e.encode('utf8'))
+            minhash = mh.hashvalues.astype(np.int64)
+            minhash_s32 = ((minhash % (2**32)) - 2**31).astype(np.int32).tolist()
+            add_count = len(new_ids)
+            gone_count = len(gone_ids) + last_gone_count
+            #logger.debug(f"calculated minhash {minhash}")
+
             for id in new_ids:
                 (et, esk) = type_dict[id]
-                mh = MinHash()
-                for e in new_state_set:
-                    mh.update(e.encode('utf8'))
-                minhash = mh.hashvalues.astype(np.int64)
-                minhash_s32 = ((minhash % (2**32)) - 2**31).astype(np.int32).tolist()
-                #logger.debug(f"calculated minhash {minhash}")
-                add_state(last_sg_id, id, et, esk, minhash_s32)
+                add_state(last_sg_id, id, et, esk, minhash_s32, add_count, gone_count)
             for id in gone_ids:
                 mark_state_as_gone(last_sg_id, id)
-            return new_state_set
+
+            if add_count > 0:
+                last_gone_count = 0
+            else:
+                last_gone_count = gone_count
+
+            return (new_state_set, last_gone_count)
 
         # build up the event IDs in this state group
         if sg_id == last_sg_id:
@@ -273,14 +288,14 @@ for i in range(0, len(sg_id_list), batch_size):
             continue
         else:
             if last_sg_id is not None:
-                state_set = handle_last_sg(state_set)
+                (state_set, last_gone_count) = handle_last_sg(state_set, last_gone_count)
 
             # get going on the new sg
             last_sg_id = sg_id
             sg = { (event_type, state_key): event_id }
 
 # flush the last sg
-handle_last_sg(state_set)
+handle_last_sg(state_set, last_gone_count)
 
 # import pprint
 # logger.debug("state_groups")
