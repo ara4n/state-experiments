@@ -344,10 +344,12 @@ type_dict = {} # type_dict[evemt_id] = (type,key) for remembering the type of a 
 #         6999 |  1040664232 |    -528
 #         7099 |  1040664872 |    -659
 #         7199 |  1040665367 | -160835
-#
+##
 # In other words, it looks like the SGs are already Kahn-ordered within each chunk, which kinda makes sense.
 #
 # This compares with the naive memoised approach as follows:
+# 8436 rows (so only a saving of 222 rows)
+# Meanwhile, we seem to save about 16 flipflops on the worst state (down from 46 to 30). So it's not great.
 
 sg_id_list = topological_sort_chunked(sg_id_set, next_edges)
 del sg_id_set
