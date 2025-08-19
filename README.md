@@ -13,7 +13,7 @@
   * helps visualise LSH bands by colourcoding them on a 24-bit capable terminal
 * calc_minhash.py
   * generates minhashes SG by SG, rather than focusing on creating a temporal table, which we can then use to calculate a better ordering based on minhashes
-* calc_eras.py
+* calc_branches.py
   * goes through the minhashes table, looking for big jumps in current state, and then querying minhashes to find a better ordering by grouping the SGs into 'eras' (or 'branches').
 * calc_state.py
-  * fork of compress_memoised which loads the state in the order from calc_eras and compresses it.
+  * fork of compress_dag_ordered.py which loads the state in the order from calc_branches and compresses it.
