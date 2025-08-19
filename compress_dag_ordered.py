@@ -6,6 +6,9 @@ import logging
 import tracemalloc
 import gc
 import sys
+#import numpy as np
+#from datasketch import MinHashLSH, MinHash
+from collections import defaultdict, deque
 
 # tracemalloc.start()
 
@@ -32,7 +35,9 @@ DB_CONFIG = {
     # 'port': '5432'
 }
 
-# CREATE TABLE mstate (
+# CREATE TABLE state (
+#   start_index bigint not null,
+#   end_index bigint,
 #   start_sg_id bigint not null,
 #   end_sg_id bigint,
 #   event_id text,
@@ -40,7 +45,7 @@ DB_CONFIG = {
 #   type text,
 #   state_key text
 # );
-#
+
 # CREATE INDEX matthew_state_end_sg_id_start_sg_id_room_id_idx ON matthew_state (end_sg_id, start_sg_id, room_id);
 # took 50s on a 13GB table on matrix.org to create a ~1GB index
 #
@@ -65,28 +70,188 @@ logging.basicConfig(
 
 room_id = '!kxwQeJPhRigXSZrHqf:matrix.org'
 
+# from claude
+def find_chunks(nodes, edges):
+    """
+    Find disconnected chunks in the DAG.
+    
+    Args:
+        nodes: Set or list of node IDs
+        edges: Dict mapping source nodes to destination(s)
+    
+    Returns:
+        List of sets, where each set contains nodes in one chunk
+    """
+    # Build undirected graph for finding connected components
+    graph = defaultdict(set)
+    
+    for origin, destinations in edges.items():
+        if isinstance(destinations, (list, tuple, set)):
+            for destination in destinations:
+                graph[origin].add(destination)
+                graph[destination].add(origin)  # Make undirected
+        else:
+            graph[origin].add(destinations)
+            graph[destinations].add(origin)  # Make undirected
+    
+    visited = set()
+    chunks = []
+    
+    for node in nodes:
+        if node not in visited:
+            # BFS to find connected component
+            chunk = set()
+            queue = deque([node])
+            
+            while queue:
+                current = queue.popleft()
+                if current not in visited:
+                    visited.add(current)
+                    chunk.add(current)
+                    
+                    # Add unvisited neighbors
+                    for neighbor in graph[current]:
+                        if neighbor not in visited:
+                            queue.append(neighbor)
+            
+            chunks.append(chunk)
+    
+    return chunks
+
+def order_chunks_chronologically(chunks):
+    """
+    Order chunks chronologically based on lexicographic ordering of node IDs.
+    
+    Args:
+        chunks: List of sets, where each set contains nodes in one chunk
+    
+    Returns:
+        List of chunks ordered chronologically (earliest first)
+    """
+    # For each chunk, find the lexicographically smallest node ID
+    chunk_min_ids = []
+    for chunk in chunks:
+        min_id = min(chunk)  # Lexicographically smallest ID in chunk
+        chunk_min_ids.append((min_id, chunk))
+    
+    # Sort by minimum ID
+    chunk_min_ids.sort(key=lambda x: x[0])
+    
+    return [chunk for _, chunk in chunk_min_ids]
+
+def topological_sort_chunked(nodes, edges):
+    """
+    Topologically sort nodes, ordering chunks chronologically first,
+    then topologically within each chunk.
+    
+    Args:
+        nodes: Set or list of node IDs (strings)
+        edges: Dict where key is origin node ID, value is a list of destination node IDs
+    
+    Returns:
+        List of nodes in topological order with chunks ordered chronologically
+    
+    Raises:
+        ValueError: If any chunk contains a cycle
+    """
+    # Find disconnected chunks
+    chunks = find_chunks(nodes, edges)
+    
+    # Order chunks chronologically
+    ordered_chunks = order_chunks_chronologically(chunks)
+    
+    result = []
+    
+    # Process each chunk in chronological order
+    for chunk in ordered_chunks:
+        # Extract edges within this chunk
+        chunk_edges = {}
+        for origin, destinations in edges.items():
+            if origin in chunk:
+                # Filter destinations to only include nodes in this chunk
+                chunk_destinations = [dest for dest in destinations if dest in chunk]
+                if chunk_destinations:
+                    chunk_edges[origin] = chunk_destinations
+        
+        # Topologically sort within this chunk
+        chunk_sorted = topological_sort(chunk, chunk_edges)
+        result.extend(chunk_sorted)
+    
+    return result
+
+def topological_sort(nodes, edges):
+    """
+    Topologically sort nodes according to DAG edges using Kahn's algorithm.
+    
+    Args:
+        nodes: Set or list of node IDs (strings)
+        edges: Dict where key is origin node ID, value is a list of destination node IDs
+    
+    Returns:
+        List of nodes in topological order
+    
+    Raises:
+        ValueError: If the graph contains a cycle
+    """
+    # Build adjacency list and calculate in-degrees
+    graph = defaultdict(list)
+    in_degree = defaultdict(int)
+    
+    # Initialize in-degree for all nodes
+    for node in nodes:
+        in_degree[node] = 0
+    
+    # Build graph and calculate in-degrees
+    for origin, destinations in edges.items():
+        for destination in destinations:
+            graph[origin].append(destination)
+            in_degree[destination] += 1
+    
+    # Find all nodes with no incoming edges
+    queue = deque([node for node in nodes if in_degree[node] == 0])
+    result = []
+    
+    # Process nodes with no incoming edges
+    while queue:
+        current = queue.popleft()
+        result.append(current)
+        
+        # Remove current node and update in-degrees of neighbors
+        for neighbor in graph[current]:
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                queue.append(neighbor)
+    
+    # Check for cycles
+    if len(result) != len(nodes):
+        raise ValueError("Graph contains a cycle - topological sort not possible")
+    
+    return result
+
+
 conn = psycopg2.connect(**DB_CONFIG)
 conn.set_session(autocommit=True)
 
 state_table = []
 lifetimes = {} # event_id -> ( start_sg, end_sg )
 
-def add_state(sg_id, event_id, event_type, state_key):
-    logger.debug(f"adding {sg_id} {event_id} {event_type} {state_key}")
-    row = [sg_id, None, event_id, room_id, event_type, state_key]
+def add_state(index, sg_id, event_id, event_type, state_key):
+    logger.debug(f"adding {index} {sg_id} {event_id} {event_type} {state_key}")
+    row = [index, None, sg_id, None, event_id, room_id, event_type, state_key]
     state_table.append(row)
     lifetimes[event_id] = row
 
-def mark_state_as_gone(last_sg_id, event_id):
-    logger.debug(f"marking {event_id} as gone in {last_sg_id}")
+def mark_state_as_gone(last_index, last_sg_id, event_id):
+    logger.debug(f"marking {event_id} as gone at index {last_index} sg_id {last_sg_id}")
     row = lifetimes[event_id]
-    row[1] = last_sg_id
+    row[1] = last_index
+    row[3] = last_sg_id
 
 def dump_state():
     c = conn.cursor()
     execute_values(
         c,
-        "INSERT INTO mstate (start_sg_id, end_sg_id, event_id, room_id, type, state_key) VALUES %s",
+        "INSERT INTO state (start_index, end_index, start_sg_id, end_sg_id, event_id, room_id, type, state_key) VALUES %s",
         state_table,
         page_size=1000,
     )
@@ -165,10 +330,30 @@ last_sg_id = None # the SG id being accumulated
 sg = {} # sg[(type,key)] = event_id. the current stategroup being accumulated (with id last_sg_id)
 type_dict = {} # type_dict[evemt_id] = (type,key) for remembering the type of a given event id
 
-sg_id_list = sorted(sg_id_set)
+# the idea is that we improve compression by reordering the SGs topologically via Kahn's alg
+# (while also sorting the chronologically in the event that they are chunked - i.e. in each batch of 100 SGs)
+#
+# This results in 8214 rows in the state table for #NVI, out of 7279 SGs
+# but with only a handful of reordered chunks:
+#
+# test=# select * from (select start_index, start_sg_id, start_sg_id - lag(start_sg_id) over (order by start_index) as sg_diff from state order by start_index) diffs where diffs.sg_diff<0;
+#  start_index | start_sg_id | sg_diff 
+# -------------+-------------+---------
+#         3899 |   781243429 |    -200
+#         5999 |   933172116 |    -415
+#         6999 |  1040664232 |    -528
+#         7099 |  1040664872 |    -659
+#         7199 |  1040665367 | -160835
+#
+# In other words, it looks like the SGs are already Kahn-ordered within each chunk, which kinda makes sense.
+#
+# This compares with the naive memoised approach as follows:
+
+sg_id_list = topological_sort_chunked(sg_id_set, next_edges)
 del sg_id_set
 
 batch_size = 100
+index = 0
 for i in range(0, len(sg_id_list), batch_size):
     slice = sg_id_list[i:i+batch_size]
     #logger.debug(slice)
@@ -188,7 +373,7 @@ for i in range(0, len(sg_id_list), batch_size):
         logger.debug('')
         type_dict[event_id] = (event_type, state_key)
 
-        def handle_last_sg(state_set):
+        def handle_last_sg(state_set, index):
             state_groups[last_sg_id] = sg
             logger.debug(f"Handling sg {last_sg_id}")
             logger.debug(f"prev_edges[{last_sg_id}] = { prev_edges.get(last_sg_id, None) }")
@@ -208,9 +393,15 @@ for i in range(0, len(sg_id_list), batch_size):
             logger.debug(f"gone_ids {gone_ids}")
             for id in new_ids:
                 (et, esk) = type_dict[id]
-                add_state(last_sg_id, id, et, esk)
+                # mh = MinHash()
+                # for e in new_state_set:
+                #     mh.update(e.encode('utf8'))
+                # minhash = mh.hashvalues.astype(np.int64)
+                # minhash_s32 = ((minhash % (2**32)) - 2**31).astype(np.int32).tolist()
+                #logger.debug(f"calculated minhash {minhash}")
+                add_state(index, last_sg_id, id, et, esk)
             for id in gone_ids:
-                mark_state_as_gone(last_sg_id, id)
+                mark_state_as_gone(index, last_sg_id, id)
             return new_state_set
 
         # build up the event IDs in this state group
@@ -219,14 +410,15 @@ for i in range(0, len(sg_id_list), batch_size):
             continue
         else:
             if last_sg_id is not None:
-                state_set = handle_last_sg(state_set)
+                state_set = handle_last_sg(state_set, index)
+                index = index + 1
 
             # get going on the new sg
             last_sg_id = sg_id
             sg = { (event_type, state_key): event_id }
 
 # flush the last sg
-handle_last_sg(state_set)
+handle_last_sg(state_set, index)
 
 # import pprint
 # logger.debug("state_groups")
