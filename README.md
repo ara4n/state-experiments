@@ -2,7 +2,7 @@
 
 * compress.py
   * walks synapse's SG tables for a given room_id, turning them into a new temporal table called `state`, which tracks in which SG ID each event_id got added and removed from the current state set.
-  * the resulting temporal table is 8436 rows (from 79690 state group state rows)
+  * the resulting temporal table is 8436 rows (from 79690 state group state rows, and across 7376 state groups, max room state of 465 state events, for #nvi)
 * compress_memoised.py
   * does the same, but shifts most of the processing from SQL to Python and collapses the results of the recursive SGS queries, speeding things up ~100x and saving RAM.  Can handle big tables like Matrix HQ (150GB) in an hour or so.
   * However, the algorithm proves not to do well in the face of unstable state, especially when Synapse flipflops storing different SGs in the event of races of lots of state traffic and/or state resets.  This means Matrix HQ only compresses down to 8B; it should be much better.
