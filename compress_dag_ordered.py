@@ -282,39 +282,25 @@ def get_state_dict(sg_id):
         if sg_id in prev_edges:
             prevs = prev_edges[sg_id]
             for prev_id in prevs:
-                if prev_id in state_groups:
-                    # logger.debug(f"merging: {get_state(prev_id)} with {sg}")
-                    sg = get_state_dict(prev_id) | sg
+                # logger.debug(f"merging: {get_state(prev_id)} with {sg}")
+                sg = get_state_dict(prev_id) | sg
 
-        #             # we can remove older SGs here if this was the only
-        #             # place we referred to them, effectively memoizing our
-        #             # results.
-        #             # on #nvi, this increases our speed by 2x and reduces our peak RAM by 2.5x
-        #             logger.debug(f"merging sg {prev_id} into sg {sg_id}")
-        #             state_groups[sg_id] = sg
-
-        #             # if (len(next_edges[prev_id]) == 1):
-        #             #     logger.debug(f"purging fully merged sg {prev_id}")
-        #             #     del state_groups[prev_id]
-        #             #     # as an optimisation, we deliberately skip clearing up next_edges and prev_edges as
-        #             #     # we know we won't refer to this SG again.
-        #             #     # In practice, this seems to buy us very little (but costs a bunch of RAM)
-        #             # else:
-        #             #     next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
-        #             #     prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
-
-        #             next_edges[prev_id] = [ id for id in next_edges[prev_id] if id != sg_id ]
-        #             prev_edges[sg_id] = [ id for id in prev_edges[sg_id] if id != prev_id ]
-        #             if (len(next_edges[prev_id]) == 0):
-        #                 logger.debug(f"purging fully merged sg {prev_id}")
-        #                 del state_groups[prev_id]
-
-        # if sg_id not in next_edges:
-        #     logger.debug(f"purging dead-end sg {sg_id}")
-        #     del state_groups[sg_id]
+                # we can't memoize because that relies on SGs being deleted after we're done with them,
+                # whereas here we process SGs out of order.
+        return sg
     else:
+        logger.info(f"failed to find sg {sg_id}; must be misordered, fetching from DB")
+        cursor.execute("""
+            SELECT type, state_key, event_id
+            FROM state_groups_state 
+            WHERE state_group = %s
+            ORDER BY state_group
+        """, [sg_id])
         sg = {}
-    return sg
+        for (event_type, state_key, event_id) in cursor.fetchall():
+            sg[(event_type, state_key)] = event_id
+        state_groups[sg_id] = sg
+        return get_state_dict(sg_id)
 
 # grab the ordered SGs and their state in one swoop, so we don't have to keep fishing out state events.
 # Problem: selects from sg or sgs table ordered by SG ID is slow as there's no index on both room_id and SG ID.
