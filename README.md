@@ -7,8 +7,9 @@
   * does the same, but shifts most of the processing from SQL to Python and collapses the results of the recursive SGS queries, speeding things up ~100x and saving RAM.  Can handle big tables like Matrix HQ (150GB) in an hour or so.
   * However, the algorithm proves not to do well in the face of unstable state, especially when Synapse flipflops storing different SGs in the event of races of lots of state traffic and/or state resets.  This means Matrix HQ only compresses down to 8B; it should be much better.
 * compress_dag_ordered.py
-  * tries to improve compression by ordering the SGs not by ID, but topologically by Kahn (and then by ID).
-  * The optimisation doesn't seem to buy much; down to 8214 rows for #nvi.
+  * tries to improve compression by ordering the SGs not by ID, but topologically by Kahn (and then by ID, given the DAG is split into ~100 SG chunks).
+  * The optimisation doesn't seem to buy much; down to 8214 rows for #nvi - Kahn doesn't consider similarity, after all.
+  * For one thing, all the ~100 item chunks don't get ordered with respect to each other, other than chronologically (which they already are)
 * compress_minhash.py
   * calculates minhashes & LSH bands for each SG, to visualise when SGs are flipflopping
 * colorize.py
@@ -25,3 +26,7 @@
 Next steps:
  * consider using the state DAG to get better similarity for adjacent temporal table rows
  * consider optimising to minimise jumps at both start & end of segments when reordering
+ * consider ordering the whole thing by minhash proximity?
+   * order LSH buckets using a space-filling curve of some kind? (z-order, hilbert?)
+   * or clustering and space-filling curve on the centers?
+   * or simulated annealing or some other fancy optimisation alg?
