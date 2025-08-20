@@ -27,6 +27,11 @@
   * with 8 bands and hilbert order of 8 then it's 94808 rows
   * Unintuitively fewer dimensions (by hashing down the LSH bands further) seems to improve locality, but not by much.
   * Perhaps this reflects the fact that the numerical distance between bands is meaningless - only commonality is, so we end up jumping around the curve at random whenver a band changes value, even if the others dimensions are nearby.
+* calc_hamming.py
+  * simply calculates distance as the number of LSB bands that two SGs have in common
+  * minimises it using greedy nearest-neighbour
+  * but fails entirely for outliers, which get bunched together at the end, causing a whole bunch of flickering which outweighs the benefits elsewhere - ends up with 10101 rows.
+  * another option could be DFS through the MST of the resulting distances, but that seems to be very unstable.
 * calc_state.py
   * fork of compress_dag_ordered.py which loads the state in the order from calc_branches and compresses it.
 
@@ -38,3 +43,4 @@ Next steps:
    * order LSH buckets using a space-filling curve of some kind? (z-order, hilbert?)
    * or clustering and space-filling curve on the centers?
    * or simulated annealing or some other fancy optimisation alg?
+ * consider order by hamming distance?
