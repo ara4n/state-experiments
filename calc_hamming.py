@@ -30,7 +30,7 @@ conn = psycopg2.connect("dbname=test") #, cursor_factory=LoggingCursor)
 conn.set_session(autocommit=True)
 cursor = conn.cursor()
 
-cursor.execute("SELECT sg_id, minhash FROM minhashes order by sg_id");
+cursor.execute("SELECT sg_id, lsh_bands FROM minhashes order by sg_id");
 sg_id_list = []
 sig_list = []
 for (sg_id, sig) in cursor.fetchall():
@@ -42,39 +42,72 @@ cursor.execute("UPDATE minhashes SET branch=NULL");
 import pprint
 # pprint.pp(lsh_bands_list)
 
+sig_len = len(sig_list[0])
+
 def distance(sig1, sig2):
-    return 128 - len(set(sig1) & set(sig2))
+    return sig_len - len(set(sig1) & set(sig2))
 
 def order_sigs(sigs):
     n = len(sigs)
     
-    print(f"Ordering {n} sigs using greedy nearest neighbor...")
+    print(f"Ordering {n} sigs using DFS on MST...")
     
-    # Start with greedy nearest neighbor
-    ordered = [0]
-    remaining = set(range(1, n))
+    # Build distance matrix
+    print("Building distance matrix...")
+    distances = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i+1, n):
+            dist = distance(sigs[i], sigs[j])
+            distances[i][j] = distances[j][i] = dist
+        
+        if (i + 1) % 1000 == 0:
+            print(f"Distances calculated: {i + 1}/{n}")
     
-    while remaining:
-        current_idx = ordered[-1]
-        current_sig = sigs[current_idx]
+    # Find MST
+    print("Building minimum spanning tree...")
+    from scipy.sparse.csgraph import minimum_spanning_tree
+    from scipy.sparse import csr_matrix
+    
+    mst = minimum_spanning_tree(csr_matrix(distances))
+    
+    # Convert to adjacency list
+    print("Converting MST to adjacency list...")
+    adj = [[] for _ in range(n)]
+    mst_coo = mst.tocoo()
+    for i, j in zip(mst_coo.row, mst_coo.col):
+        adj[i].append(j)
+        adj[j].append(i)
+    
+    # Find leaf nodes (degree 1) as potential starting points
+    leaves = [i for i in range(n) if len(adj[i]) == 1]
+    start_node = leaves[0] if leaves else 0
+
+    print(f"Starting BFS from node {start_node}")
+    
+    # BFS traversal using a queue
+    from collections import deque
+    visited = [False] * n
+    ordered = []
+    queue = deque([start_node])
+    
+    while queue:
+        node = queue.popleft()
         
-        # Find nearest unvisited sig
-        min_dist = float('inf')
-        nearest = None
+        if visited[node]:
+            continue
+            
+        visited[node] = True
+        ordered.append(node)
         
-        for idx in remaining:
-            dist = distance(current_sig, sigs[idx])
-            if dist < min_dist:
-                min_dist = dist
-                nearest = idx
+        # Add neighbors to queue in order of distance (closest first)
+        neighbors = [(distances[node][neighbor], neighbor) for neighbor in adj[node] if not visited[neighbor]]
+        neighbors.sort()  # Sort by distance, closest first
         
-        ordered.append(nearest)
-        remaining.remove(nearest)
-        
-        # Progress indicator
-        if len(ordered) % 1000 == 0:
-            print(f"Initial ordering: {len(ordered)}/{n}")
-        
+        for _, neighbor in neighbors:
+            if not visited[neighbor]:
+                queue.append(neighbor)
+    
+    print(f"BFS completed, ordered {len(ordered)} nodes")
     return ordered
 
 # sg_id_list = [ 1,2,3,4,5,6 ]

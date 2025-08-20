@@ -30,17 +30,16 @@
 * calc_hamming.py
   * simply calculates distance as the number of LSB bands that two SGs have in common
   * minimises it using greedy nearest-neighbour
-  * but fails entirely for outliers, which get bunched together at the end, causing a whole bunch of flickering which outweighs the benefits elsewhere - ends up with 10101 rows.
-  * another option could be DFS through the MST of the resulting distances, but that seems to be very unstable.
+  * but fails entirely for outliers, which get bunched together as ~63 stragglers at the end, causing a whole bunch of flickering which outweighs the benefits elsewhere
+    * ends up with 10101 rows when looking at distance between minhashes, and 9877 when looking at distance between lsh_bands
+  * another option could be DFS through the MST of the resulting distances.
+    * which looks quite good - but by default clusters in ascending order... and then descending again, meaning it uses roughly twice the storage that it should: 15606 rows.
+    * so can we change the distance calculation to encourage it to prioritise IDs going up?
+  * YES! BFS works really well, and gives 8045 rows. Given the theoretical minimum is 7376 + 465 = 7841 (ignoring any state churn at all), this is pretty good!
+    * Visually there are still some odd ones out though. Plus, this requires O(N^2) to calculate the distances between all the SG LSH bands
 * calc_state.py
   * fork of compress_dag_ordered.py which loads the state in the order from calc_branches and compresses it.
-
 
 Next steps:
  * consider using the state DAG to get better similarity for adjacent temporal table rows
  * consider optimising to minimise jumps at both start & end of segments when reordering
- * consider ordering the whole thing by minhash proximity?
-   * order LSH buckets using a space-filling curve of some kind? (z-order, hilbert?)
-   * or clustering and space-filling curve on the centers?
-   * or simulated annealing or some other fancy optimisation alg?
- * consider order by hamming distance?
