@@ -5,11 +5,13 @@ from psycopg2.extras import execute_values
 import logging
 import sys
 import numpy as np
-from scipy.spatial.distance import pdist, squareform
-from scipy.cluster.hierarchy import linkage, leaves_list
-from psycopg2.extensions import register_adapter, AsIs
+from scipy.sparse.csgraph import minimum_spanning_tree
+from scipy.sparse import csr_matrix
+# from scipy.spatial.distance import pdist, squareform
+# from scipy.cluster.hierarchy import linkage, leaves_list
+# from psycopg2.extensions import register_adapter, AsIs
 
-register_adapter(np.int32, AsIs)
+# register_adapter(np.int32, AsIs)
 
 # Go through the minhashes table, mapping the LSH bands onto a 1D hilbert curve to group things by proximity.
 
@@ -50,7 +52,7 @@ def distance(sig1, sig2):
 def order_sigs(sigs):
     n = len(sigs)
     
-    print(f"Ordering {n} sigs using DFS on MST...")
+    print(f"Ordering {n} sigs using BFS on MST...")
     
     # Build distance matrix
     print("Building distance matrix...")
@@ -65,8 +67,6 @@ def order_sigs(sigs):
     
     # Find MST
     print("Building minimum spanning tree...")
-    from scipy.sparse.csgraph import minimum_spanning_tree
-    from scipy.sparse import csr_matrix
     
     mst = minimum_spanning_tree(csr_matrix(distances))
     
