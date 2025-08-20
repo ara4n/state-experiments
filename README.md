@@ -20,8 +20,16 @@
   * goes through the minhashes table, looking for big jumps in current state, and then querying minhashes to find a better ordering by grouping the SGs into 'branches'
   * except this doesn't work very well, as we just end up shifting the big jumps to the *end* of the reordered sequence.
   * in fact, this ends up compressing #nvi to 8382 rows.
+* calc_hilbert.py
+  * fork of calc_branches, which goes through the minhashes table simply trying to order by proximity on hilbert space based on LSH bands.
+  * with 16 bands and hilbert order of 8 then this doesn't work great - 95023 rows :/
+  * with 8 bands and hilbert order of 32 then it's 97537 rows
+  * with 8 bands and hilbert order of 8 then it's 94808 rows
+  * Unintuitively fewer dimensions (by hashing down the LSH bands further) seems to improve locality, but not by much.
+  * Perhaps this reflects the fact that the numerical distance between bands is meaningless - only commonality is, so we end up jumping around the curve at random whenver a band changes value, even if the others dimensions are nearby.
 * calc_state.py
   * fork of compress_dag_ordered.py which loads the state in the order from calc_branches and compresses it.
+
 
 Next steps:
  * consider using the state DAG to get better similarity for adjacent temporal table rows
