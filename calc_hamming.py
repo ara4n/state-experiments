@@ -13,7 +13,8 @@ from scipy.sparse import csr_matrix
 
 # register_adapter(np.int32, AsIs)
 
-# Go through the minhashes table, mapping the LSH bands onto a 1D hilbert curve to group things by proximity.
+# Go through the minhashes table, calculating the hamming distance between all LSH bands
+# and then BFS through the MST to order them
 
 # ALTER TABLE minhashes ADD COLUMN IF NOT EXISTS ordering BIGINT;
 

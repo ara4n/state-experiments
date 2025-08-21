@@ -28,18 +28,25 @@
   * Unintuitively fewer dimensions (by hashing down the LSH bands further) seems to improve locality, but not by much.
   * Perhaps this reflects the fact that the numerical distance between bands is meaningless - only commonality is, so we end up jumping around the curve at random whenver a band changes value, even if the others dimensions are nearby.
 * calc_hamming.py
-  * simply calculates distance as the number of LSB bands that two SGs have in common
-  * minimises it using greedy nearest-neighbour
-  * but fails entirely for outliers, which get bunched together as ~63 stragglers at the end, causing a whole bunch of flickering which outweighs the benefits elsewhere
+  * simply calculates distance as the number of LSB bands that two SGs have in common, and treat it as the travelling salesman problem
+  * minimise it using greedy nearest-neighbour
+    * fails entirely for outliers, which get bunched together as ~63 stragglers at the end, causing a whole bunch of flickering which outweighs the benefits elsewhere
     * ends up with 10101 rows when looking at distance between minhashes, and 9877 when looking at distance between lsh_bands
   * another option could be DFS through the MST of the resulting distances.
     * which looks quite good - but by default clusters in ascending order... and then descending again, meaning it uses roughly twice the storage that it should: 15606 rows.
     * so can we change the distance calculation to encourage it to prioritise IDs going up?
-  * YES! BFS works really well, and gives 8045 rows. Given the theoretical minimum is 7376 + 465 = 7841 (ignoring any state churn at all), this is pretty good!
+  * YES! BFS works well, and gives 8045 rows. Given the theoretical minimum is 7376 + 465 = 7841 (ignoring any state churn at all), this is pretty good!
     * Visually there are still some odd ones out though. Plus, this requires O(N^2) to calculate the distances between all the SG LSH bands
+    * It does flap back and forth a bit still; worst-case 30 times on the dataset (down from 46 times)
+* calc_segmented_mst.py
+  * fork of calc_hamming.py which first segments the SG list based on jumps and branch points, and then applies the MST BFS to the resulting segments, looking at the hamming distance from the end to the start of each segment.
+  * Effectively, it's a clustering strategy - a hybrid between calc_branches and calc_hamming
+  * this means we only have 76 segments to order, so it's much more efficient than doing all 7280 SGs
+  * however, it doesn't seem to work quite as well - compresses to 8796 thanks to some flipflopping.
 * calc_state.py
   * fork of compress_dag_ordered.py which loads the state in the order from calc_branches and compresses it.
 
 Next steps:
  * consider using the state DAG to get better similarity for adjacent temporal table rows
  * consider optimising to minimise jumps at both start & end of segments when reordering
+   * Can we treat this effectively as travelling salesman problem between a DAG formed by the various segments?
