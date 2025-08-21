@@ -43,11 +43,16 @@
   * Effectively, it's a clustering strategy - a hybrid between calc_branches and calc_hamming
   * this means we only have 76 segments to order, so it's much more efficient than doing all 7280 SGs
   * however, it doesn't seem to work quite as well - compresses to 8796 thanks to some flipflopping.
-  * The problem seems to be that the MST contains lead nodes which end up inserted in a bad order; would be better to manually order them
+  * Expanding the cut points to any point in time doesn't help (=> 8869 rows)
+  * The problem seems to be that the MST contains lead nodes which end up inserted in a bad order; would be better to exclude them from the MST and then manually slot them in based on distance or even chronology
+  * alternatively...
+* calc_segmented_tsp.py
+  * fork of calc_segmented_mst.py which instead treats it as the travelling salesperson problem between clusters, given that's what we're actually doing here, and given we only have 76 rows to play with.
+  * Using elkai, this returns 7901 - so our best yet.
+* alternatively, we could try calculating the optimal branching (aka minimum weight spanning arborescence), which is effectively the MST of the directed graph and BFS it.
+  * This is what calc_branches.py was clumsily converging on - however, it would suffer the same problem of the extremities of the branches not being aligned. TSP should be better.
 * calc_state.py
-  * fork of compress_dag_ordered.py which loads the state in the order from calc_branches and compresses it.
+  * fork of compress_dag_ordered.py which loads the state in the order from calc_branches/hilbert/hamming/segmented_mst/segmented_tsp and compresses it.
 
 Next steps:
  * consider using the state DAG to get better similarity for adjacent temporal table rows
- * consider optimising to minimise jumps at both start & end of segments when reordering
-   * Can we treat this effectively as travelling salesman problem between a DAG formed by the various segments?

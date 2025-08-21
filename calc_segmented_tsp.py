@@ -7,15 +7,14 @@ import sys
 import pprint
 from collections import deque
 import numpy as np
-from scipy.sparse.csgraph import minimum_spanning_tree
-from scipy.sparse import csr_matrix
+import elkai
 
 # Go through the minhashes table, segmenting into regions where the
 # add_count and gone_count aren't too big.
 # Then, figure out similarity for both start *and* end of each segment
 # based on querying minhash similarity.
 # Then, split those segments on both src & dest
-# Then use BFS through MST to linearise these segments.
+# Then solve the travelling salesperson problem to linearise these segments.
 
 # ALTER TABLE minhashes ADD COLUMN IF NOT EXISTS ordering BIGINT;
 
@@ -112,11 +111,7 @@ for i, section in enumerate(sections):
             AND sg_id < %s
             ORDER BY jaccard_similarity(minhash, %s) DESC, sg_id DESC
             LIMIT 1;
-        """, [
-            start['lsh_bands'],
-            start['sg_id'],
-            start['minhash'],
-        ])
+        """, [ start['lsh_bands'], start['sg_id'], start['minhash'] ])
         row = c.fetchone()
         if row is not None:
             logger.info(f"found start branch point {row[0]} for { start['sg_id'] }")
@@ -142,11 +137,7 @@ for i, section in enumerate(sections):
             AND sg_id > %s
             ORDER BY jaccard_similarity(minhash, %s) DESC, sg_id ASC
             LIMIT 1;
-        """, [
-            end['lsh_bands'],
-            end['sg_id'],
-            end['minhash'],
-        ])
+        """, [ end['lsh_bands'], end['sg_id'], end['minhash'] ])
         row = c.fetchone()
         if row is not None:
             logger.info(f"found end   branch point {row[0]} for { end['sg_id'] }")
@@ -195,8 +186,8 @@ for i, sg_id in enumerate(sg_id_list):
         segment = { 'ids': [] }
 #segments.append(segment)
 
-for segment in segments:
-    print(f"segment { segment['ids'][0] } -> { segment['ids'][-1] }")
+for i, segment in enumerate(segments):
+    print(f"segment #{ i } { segment['ids'][0] } -> { segment['ids'][-1] }")
 
 def dumpdot(adj):
     dot = open("graph.dot", "w")
@@ -223,71 +214,26 @@ def distance(seg1, seg2):
 def order_segs(segs):
     n = len(segs)
     
-    print(f"Ordering {n} segs using BFS on MST...")
+    print(f"Ordering {n} segs using TSP...")
     
     # Build distance matrix
     print("Building distance matrix...")
-    distances = np.zeros((n, n))
-    for i in range(n):
-        for j in range(n):
-            # we allow high->low edges given the order may be shuffled.
-            # however, given distance is no longer symmetrical, we have
-            # to populate the whole matrix.
+    distances = np.zeros((n, n), dtype=int)
+    for i in range(n): # row
+        for j in range(n): # column
             dist = distance(segs[i], segs[j])
             distances[i][j] = dist
         
         if (i + 1) % 1000 == 0:
             print(f"Distances calculated: {i + 1}/{n}")
-    
-    # Find MST
-    print("Building minimum spanning tree...")
-    
-    mst = minimum_spanning_tree(csr_matrix(distances))
-    
-    # Convert to adjacency list
-    print("Converting MST to adjacency list...")
-    adj = [[] for _ in range(n)]
-    mst_coo = mst.tocoo()
-    for i, j in zip(mst_coo.row, mst_coo.col):
-        adj[i].append(j)
-        # FIXME: it's these backlinks which mean we cover the whole MST, but end up with horribly out of order nodes (e.g. segment 4)
-        adj[j].append(i)
-    
-    dumpdot(adj)
 
-    # Find leaf nodes (degree 1) as potential starting points
-    leaves = [i for i in range(n) if len(adj[i]) == 1]
-    start_node = leaves[0] if leaves else 0
+    print("  |" + " ".join(f'{i:2d}' for i in range(n)))
+    print("---" * (n + 1))
+    for i in range(n):
+        print(f"{i:2d}|" + " ".join(f'{d:2d}' for d in distances[i]))
 
-    print(f"leaves: { leaves }")
-
-    print(f"Starting BFS from node {start_node}")
-    
-    # BFS traversal using a queue
-    from collections import deque
-    visited = [False] * n
-    ordered = []
-    queue = deque([start_node])
-    
-    while queue:
-        node = queue.popleft()
-        
-        if visited[node]:
-            continue
-            
-        visited[node] = True
-        ordered.append(node)
-        
-        # Add neighbors to queue in order of distance (closest first)
-        neighbors = [(distances[node][neighbor], neighbor) for neighbor in adj[node] if not visited[neighbor]]
-        neighbors.sort()  # Sort by distance, closest first
-        
-        for _, neighbor in neighbors:
-            if not visited[neighbor]:
-                queue.append(neighbor)
-    
-    print(f"BFS completed, ordered {len(ordered)} nodes")
-    return ordered
+    tour = elkai.solve_int_matrix(distances)
+    return tour
 
 segment_ordering = order_segs(segments)
 for i, id in enumerate(segment_ordering):
