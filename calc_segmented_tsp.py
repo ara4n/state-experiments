@@ -189,21 +189,6 @@ for i, sg_id in enumerate(sg_id_list):
 for i, segment in enumerate(segments):
     logging.debug(f"segment #{ i } { segment['ids'][0] } -> { segment['ids'][-1] }")
 
-def dumpdot(adj):
-    dot = open("graph.dot", "w")
-    logging.debug("digraph G {", file=dot)
-    logging.debug("  rankdir=LR", file=dot)
-    for i, segment in enumerate(segments):        
-        logging.debug(f"  { i } [label=\"{i}:{ segment['ids'][0] }->{ segment['ids'][-1] } ({len(segment['ids'])})\"]", file=dot)
-    for i, dests in enumerate(adj):
-        for dest in dests:
-            if i < dest:
-                logging.debug(f"  { i } -> { dest } [label=\"{ distance(segments[i], segments[dest]) }\"]", file=dot)
-            # else:
-            #     logging.debug(f"  { i } -> { dest } [label=\"{ distance(segments[i], segments[dest]) }\",style=\"dotted\"]", file=dot)
-    logging.debug("}", file=dot)
-    dot.close()
-
 def distance(seg1, seg2):
     if seg1 == seg2:
         return 0
