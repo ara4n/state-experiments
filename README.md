@@ -56,14 +56,33 @@ TL;DR: current pipeline is:
   * however, it doesn't seem to work quite as well - compresses to 8796 thanks to some flipflopping.
   * Expanding the cut points to any point in time doesn't help (=> 8869 rows)
   * The problem seems to be that the MST contains lead nodes which end up inserted in a bad order; would be better to exclude them from the MST and then manually slot them in based on distance or even chronology
-  * alternatively...
+* calc_segmented_msa.py
+  * alternatively, we could try calculating the optimal branching (aka minimum weight spanning arborescence), which is effectively the MST of the directed graph and BFS it.
+  * This is what calc_branches.py was clumsily converging on - however, it would suffer the same problem of the extremities of the branches not being aligned. TSP should be better.
+  * Indeed, BFS on the MSA provides 8300 row in the state table, so better than MST, but not much better than our original calc_branches.
 * calc_segmented_tsp.py
   * fork of calc_segmented_mst.py which instead treats it as the travelling salesperson problem between clusters, given that's what we're actually doing here, and given we only have 76 rows to play with.
   * Using elkai, this returns 7901 and only takes 900ms for 76 segments - so our best yet.
-* alternatively, we could try calculating the optimal branching (aka minimum weight spanning arborescence), which is effectively the MST of the directed graph and BFS it.
-  * This is what calc_branches.py was clumsily converging on - however, it would suffer the same problem of the extremities of the branches not being aligned. TSP should be better.
 * calc_state.py
   * fork of compress_dag_ordered.py which loads the state in the order from calc_branches/hilbert/hamming/segmented_mst/segmented_tsp and compresses it.
 
 Next steps:
  * consider using the state DAG to get better similarity for adjacent temporal table rows
+
+## Dumping state
+
+```sql
+\copy (SELECT * FROM matrix.state_groups WHERE room_id = '!OGEhHVWSdvArJzumhm:matrix.org') TO 'sg.csv' WITH CSV HEADER;
+\copy (SELECT * FROM matrix.state_group_edges WHERE state_group in (select id from matrix.state_groups where room_id = '!OGEhHVWSdvArJzumhm:matrix.org')) TO 'sge.csv' WITH CSV HEADER;
+```
+```bash
+psql matrix -c "copy (SELECT * FROM matrix.state_groups_state WHERE room_id = '!OGEhHVWSdvArJzumhm:matrix.org') TO stdout WITH CSV HEADER;" | pv | zstd -T0 --long=27 -19 > sgs.zstd
+```
+
+## Loading state
+
+```bash
+cat sg.csv| psql test -c 'COPY state_groups FROM STDIN WITH CSV HEADER'
+cat sge.csv| psql test -c 'COPY state_group_edges FROM STDIN WITH CSV HEADER'
+zstdcat sgs.zstd | pv | psql test -c 'COPY state_groups_state FROM STDIN WITH CSV HEADER'
+```

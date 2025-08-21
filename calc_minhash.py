@@ -38,7 +38,8 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
 )
 
-room_id = '!kxwQeJPhRigXSZrHqf:matrix.org'
+#room_id = '!kxwQeJPhRigXSZrHqf:matrix.org'
+room_id = '!OGEhHVWSdvArJzumhm:matrix.org'
 
 conn = psycopg2.connect(**DB_CONFIG)
 conn.set_session(autocommit=True)
@@ -154,7 +155,6 @@ logger.info("loading SG state")
 # state_groups[sg_id] = { (event_type, state_key): event_id }
 state_groups = {}
 
-# XXX: state_set is what we need to consider per-era!
 state_set = set() # the set of event_ids in current state as of last_sg_id
 last_sg_id = None # the SG id being accumulated
 sg = {} # sg[(type,key)] = event_id. the current stategroup being accumulated (with id last_sg_id)
@@ -199,6 +199,8 @@ for i in range(0, len(sg_id_list), batch_size):
 
             logger.debug(f"len(new_state_set)={len(new_state_set)} len(state_set)={len(state_set)}")
 
+            # todo: parallelise this somehow. it's not even using 1 thread.
+            # on M1, it takes 30m for 50,000 state groups in HQ
             mh = MinHash()
             for e in new_state_set:
                 mh.update(e.encode('utf8'))

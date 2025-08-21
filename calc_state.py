@@ -17,16 +17,16 @@ from collections import defaultdict, deque
 #   state_key text
 # );
 
-# CREATE INDEX matthew_state_end_sg_id_start_sg_id_room_id_idx ON matthew_state (end_sg_id, start_sg_id, room_id);
+# CREATE INDEX state_end_sg_id_start_sg_id_room_id_idx ON state (end_sg_id, start_sg_id, room_id);
 # took 50s on a 13GB table on matrix.org to create a ~1GB index
 #
 # partial index specifically on NULLs
-# CREATE INDEX matthew_state_room_id_start_sg_id_null_end_sg_id_idx ON matthew_state (room_id, start_sg_id) WHERE end_sg_id IS NULL;
+# CREATE INDEX state_room_id_start_sg_id_null_end_sg_id_idx ON state (room_id, start_sg_id) WHERE end_sg_id IS NULL;
 #
-# CREATE INDEX matthew_state_event_id_idx ON matthew_state (event_id);
+# CREATE INDEX state_event_id_idx ON state (event_id);
 # just for rapid searching on events; this is big though (~1G)
 #
-# CREATE INDEX matthew_state_room_id_idx ON matthew_state (room_id);
+# CREATE INDEX state_room_id_idx ON state (room_id);
 # just for rapid searching on rooms
 
 logger = logging.getLogger()
