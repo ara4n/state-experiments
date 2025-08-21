@@ -1,5 +1,15 @@
 # Synapse state storage experiments
 
+A very hacky bunch of experiments, playing with different algorithms for ordering Matrix state sets
+in a temporal table as close together as possible for maximum efficiency.
+
+TL;DR: current pipeline is:
+```bash
+ ./calc_minhash.py
+ ./calc_segmented_tsp.py
+ ./calc_state.py
+ ```
+
 * compress.py
   * walks synapse's SG tables for a given room_id, turning them into a new temporal table called `state`, which tracks in which SG ID each event_id got added and removed from the current state set.
   * the resulting temporal table is 8436 rows (from 79690 state group state rows, and across 7376 state groups, max room state of 465 state events, for #nvi)
@@ -14,6 +24,7 @@
   * calculates minhashes & LSH bands for each SG, to visualise when SGs are flipflopping. obsoleted by calc_minhash.py below.
 * colorize.py
   * helps visualise LSH bands by colourcoding them on a 24-bit capable terminal
+
 * calc_minhash.py
   * generates minhashes SG by SG, rather than focusing on creating a temporal table, which we can then use to calculate a better ordering based on minhashes
 * calc_branches.py
