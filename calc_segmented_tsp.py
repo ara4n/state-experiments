@@ -22,7 +22,7 @@ logger = logging.getLogger()
 
 logging.basicConfig(
     stream=sys.stdout,
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
 )
@@ -46,8 +46,8 @@ cursor = conn.cursor()
 cursor.execute("SELECT sg_id FROM minhashes order by sg_id")
 sg_id_list = [ row[0] for row in cursor.fetchall() ]
 
-print("sg_id_list")
-print(' '.join(f'{id:10d}' for id in sg_id_list))
+logging.debug("sg_id_list")
+logging.debug(' '.join(f'{id:10d}' for id in sg_id_list))
 
 lsh_bands = {} # sg_id => []
 
@@ -83,7 +83,7 @@ for i, b in enumerate(section_starts):
     })
 
 for section in sections:
-    print(f"section { section['start']['sg_id'] } -> { section['end']['sg_id'] }")
+    logging.debug(f"section { section['start']['sg_id'] } -> { section['end']['sg_id'] }")
 
 # cut points of nodes we cut before or after - due to branchpoints
 cut_after = set()  # we cut after the src of links from the past
@@ -158,7 +158,7 @@ for row in cursor.fetchall():
 
 # check we have all the LSH Bands
 for sg_id in sorted(lsh_bands.keys()):
-    print(f"lsh {sg_id:10d}: { ','.join(f'{(x & 0xFFFFFFFF):08x}' for x in lsh_bands[sg_id]) }")
+    logging.debug(f"lsh {sg_id:10d}: { ','.join(f'{(x & 0xFFFFFFFF):08x}' for x in lsh_bands[sg_id]) }")
 
 # turn all the cut_befores into cut_afters to make it easier to cut up the sections
 for cut in cut_before:
@@ -170,7 +170,7 @@ for section in sections:
     cut_after.add( section['end']['sg_id'] )
 
 for cut in sorted(list(cut_after)):
-    print(f"cut_after { cut }")
+    logging.debug(f"cut_after { cut }")
 
 # split the sg_id_list into segments based on the cut_after points we've now found.
 
@@ -187,21 +187,21 @@ for i, sg_id in enumerate(sg_id_list):
 #segments.append(segment)
 
 for i, segment in enumerate(segments):
-    print(f"segment #{ i } { segment['ids'][0] } -> { segment['ids'][-1] }")
+    logging.debug(f"segment #{ i } { segment['ids'][0] } -> { segment['ids'][-1] }")
 
 def dumpdot(adj):
     dot = open("graph.dot", "w")
-    print("digraph G {", file=dot)
-    print("  rankdir=LR", file=dot)
+    logging.debug("digraph G {", file=dot)
+    logging.debug("  rankdir=LR", file=dot)
     for i, segment in enumerate(segments):        
-        print(f"  { i } [label=\"{i}:{ segment['ids'][0] }->{ segment['ids'][-1] } ({len(segment['ids'])})\"]", file=dot)
+        logging.debug(f"  { i } [label=\"{i}:{ segment['ids'][0] }->{ segment['ids'][-1] } ({len(segment['ids'])})\"]", file=dot)
     for i, dests in enumerate(adj):
         for dest in dests:
             if i < dest:
-                print(f"  { i } -> { dest } [label=\"{ distance(segments[i], segments[dest]) }\"]", file=dot)
+                logging.debug(f"  { i } -> { dest } [label=\"{ distance(segments[i], segments[dest]) }\"]", file=dot)
             # else:
-            #     print(f"  { i } -> { dest } [label=\"{ distance(segments[i], segments[dest]) }\",style=\"dotted\"]", file=dot)
-    print("}", file=dot)
+            #     logging.debug(f"  { i } -> { dest } [label=\"{ distance(segments[i], segments[dest]) }\",style=\"dotted\"]", file=dot)
+    logging.debug("}", file=dot)
     dot.close()
 
 def distance(seg1, seg2):
@@ -214,10 +214,10 @@ def distance(seg1, seg2):
 def order_segs(segs):
     n = len(segs)
     
-    print(f"Ordering {n} segs using TSP...")
+    logging.debug(f"Ordering {n} segs using TSP...")
     
     # Build distance matrix
-    print("Building distance matrix...")
+    logging.debug("Building distance matrix...")
     distances = np.zeros((n, n), dtype=int)
     for i in range(n): # row
         for j in range(n): # column
@@ -225,12 +225,12 @@ def order_segs(segs):
             distances[i][j] = dist
         
         if (i + 1) % 1000 == 0:
-            print(f"Distances calculated: {i + 1}/{n}")
+            logging.debug(f"Distances calculated: {i + 1}/{n}")
 
-    print("  |" + " ".join(f'{i:2d}' for i in range(n)))
-    print("---" * (n + 1))
+    logging.debug("  |" + " ".join(f'{i:2d}' for i in range(n)))
+    logging.debug("---" * (n + 1))
     for i in range(n):
-        print(f"{i:2d}|" + " ".join(f'{d:2d}' for d in distances[i]))
+        logging.debug(f"{i:2d}|" + " ".join(f'{d:2d}' for d in distances[i]))
 
     tour = elkai.solve_int_matrix(distances)
     return tour
@@ -242,16 +242,16 @@ for i, id in enumerate(segment_ordering):
         prev_seg = segments[segment_ordering[i - 1]]
     else:
         prev_seg = segments[id]
-    print(f"ordered_segment index { id } { segments[id]['ids'][0] } -> { segments[id]['ids'][-1] } dist from prev: { distance(prev_seg, this_seg) }")
+    logging.debug(f"ordered_segment index { id } { segments[id]['ids'][0] } -> { segments[id]['ids'][-1] } dist from prev: { distance(prev_seg, this_seg) }")
 
 ordered_ids = []
 for id in segment_ordering:
     ordered_ids.extend(segments[id]['ids'])
 
-print("ordered_ids")
-print(' '.join(f'{id:10d}' for id in ordered_ids))
+logging.debug("ordered_ids")
+logging.debug(' '.join(f'{id:10d}' for id in ordered_ids))
 
-print(f"length of ordered_ids = {len(ordered_ids)}")
+logging.debug(f"length of ordered_ids = {len(ordered_ids)}")
 if len(ordered_ids) != len(sg_id_list):
     logger.fatal("we've lost SGs")
     sys.exit(1)

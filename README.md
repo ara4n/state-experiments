@@ -48,7 +48,7 @@
   * alternatively...
 * calc_segmented_tsp.py
   * fork of calc_segmented_mst.py which instead treats it as the travelling salesperson problem between clusters, given that's what we're actually doing here, and given we only have 76 rows to play with.
-  * Using elkai, this returns 7901 - so our best yet.
+  * Using elkai, this returns 7901 and only takes 900ms for 76 segments - so our best yet.
 * alternatively, we could try calculating the optimal branching (aka minimum weight spanning arborescence), which is effectively the MST of the directed graph and BFS it.
   * This is what calc_branches.py was clumsily converging on - however, it would suffer the same problem of the extremities of the branches not being aligned. TSP should be better.
 * calc_state.py
