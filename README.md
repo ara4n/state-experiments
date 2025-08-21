@@ -43,6 +43,7 @@
   * Effectively, it's a clustering strategy - a hybrid between calc_branches and calc_hamming
   * this means we only have 76 segments to order, so it's much more efficient than doing all 7280 SGs
   * however, it doesn't seem to work quite as well - compresses to 8796 thanks to some flipflopping.
+  * The problem seems to be that the MST contains lead nodes which end up inserted in a bad order; would be better to manually order them
 * calc_state.py
   * fork of compress_dag_ordered.py which loads the state in the order from calc_branches and compresses it.
 

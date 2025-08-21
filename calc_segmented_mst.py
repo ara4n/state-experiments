@@ -47,6 +47,7 @@ cursor = conn.cursor()
 cursor.execute("SELECT sg_id FROM minhashes order by sg_id")
 sg_id_list = [ row[0] for row in cursor.fetchall() ]
 
+print("sg_id_list")
 print(' '.join(f'{id:10d}' for id in sg_id_list))
 
 lsh_bands = {} # sg_id => []
@@ -189,6 +190,21 @@ for i, sg_id in enumerate(sg_id_list):
 for segment in segments:
     print(f"segment { segment['ids'][0] } -> { segment['ids'][-1] }")
 
+def dumpdot(adj):
+    dot = open("graph.dot", "w")
+    print("digraph G {", file=dot)
+    print("  rankdir=LR", file=dot)
+    for i, segment in enumerate(segments):        
+        print(f"  { i } [label=\"{i}:{ segment['ids'][0] }->{ segment['ids'][-1] } ({len(segment['ids'])})\"]", file=dot)
+    for i, dests in enumerate(adj):
+        for dest in dests:
+            if i < dest:
+                print(f"  { i } -> { dest } [label=\"{ distance(segments[i], segments[dest]) }\"]", file=dot)
+            # else:
+            #     print(f"  { i } -> { dest } [label=\"{ distance(segments[i], segments[dest]) }\",style=\"dotted\"]", file=dot)
+    print("}", file=dot)
+    dot.close()
+
 def distance(seg1, seg2):
     if seg1 == seg2:
         return 0
@@ -205,9 +221,9 @@ def order_segs(segs):
     print("Building distance matrix...")
     distances = np.zeros((n, n))
     for i in range(n):
-        for j in range(n):
+        for j in range(i+1, n):
             dist = distance(segs[i], segs[j])
-            distances[i][j] = dist
+            distances[i][j] = distances[j][i] = dist
         
         if (i + 1) % 1000 == 0:
             print(f"Distances calculated: {i + 1}/{n}")
@@ -223,11 +239,16 @@ def order_segs(segs):
     mst_coo = mst.tocoo()
     for i, j in zip(mst_coo.row, mst_coo.col):
         adj[i].append(j)
+        # FIXME: it's these backlinks which mean we cover the whole MST, but end up with horribly out of order nodes (e.g. segment 4)
         adj[j].append(i)
     
+    dumpdot(adj)
+
     # Find leaf nodes (degree 1) as potential starting points
     leaves = [i for i in range(n) if len(adj[i]) == 1]
     start_node = leaves[0] if leaves else 0
+
+    print(f"leaves: { leaves }")
 
     print(f"Starting BFS from node {start_node}")
     
@@ -258,12 +279,20 @@ def order_segs(segs):
     return ordered
 
 segment_ordering = order_segs(segments)
-for segment in segment_ordering:
-    print(f"ordered_segment { segment }")
+for i, id in enumerate(segment_ordering):
+    this_seg = segments[id]
+    if i > 0:
+        prev_seg = segments[segment_ordering[i - 1]]
+    else:
+        prev_seg = segments[id]
+    print(f"ordered_segment index { id } { segments[id]['ids'][0] } -> { segments[id]['ids'][-1] } dist from prev: { distance(prev_seg, this_seg) }")
 
 ordered_ids = []
 for id in segment_ordering:
     ordered_ids.extend(segments[id]['ids'])
+
+print("ordered_ids")
+print(' '.join(f'{id:10d}' for id in ordered_ids))
 
 print(f"length of ordered_ids = {len(ordered_ids)}")
 if len(ordered_ids) != len(sg_id_list):
@@ -272,7 +301,7 @@ if len(ordered_ids) != len(sg_id_list):
 
 # set the new ordering
 update_data = list(zip(sg_id_list, ordered_ids))
-pprint.pp(update_data)
+# pprint.pp(update_data)
 
 execute_values(
     cursor,
