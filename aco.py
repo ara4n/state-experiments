@@ -19,7 +19,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
 )
 
-# Parllelised Ant Colony Optimisation solution for travelling salesman problem, entirely courtesy of Claude
+# Parllelised Ant Colony Optimisation solution for directed travelling salesman problem, entirely courtesy of Claude
 @njit(nogil=True, parallel=True)
 def construct_solutions_batch_numba(distances, pheromones, heuristic, n_cities, alpha, beta, n_ants, seeds):
     """Numba-compiled batch solution construction with GIL released"""
@@ -166,7 +166,8 @@ class FastAntColonyTSP:
     def __init__(self, distance_matrix: np.ndarray, n_ants: int = None, 
                  n_iterations: int = 100, alpha: float = 1.0, beta: float = 2.0,
                  evaporation_rate: float = 0.5, q: float = 100, 
-                 use_sparse: bool = True, batch_size: int = None):
+                 use_sparse: bool = True, batch_size: int = None, 
+                 symmetric: bool = True):
         """
         Optimized Ant Colony Optimization for TSP with parallel batch processing
         
@@ -180,6 +181,7 @@ class FastAntColonyTSP:
             q: Pheromone deposit factor
             use_sparse: Use sparse matrix optimizations
             batch_size: Process ants in batches of this size (None = all at once)
+            symmetric: True for undirected graphs, False for directed (asymmetric TSP)
         """
         self.distances = distance_matrix.astype(np.float64)
         self.n_cities = len(distance_matrix)
@@ -207,6 +209,7 @@ class FastAntColonyTSP:
         self.beta = beta
         self.evaporation_rate = evaporation_rate
         self.q = q
+        self.symmetric = symmetric
         
         # Initialize pheromone matrix
         self.pheromones = np.ones((self.n_cities, self.n_cities), dtype=np.float64) / self.n_cities
@@ -229,6 +232,7 @@ class FastAntColonyTSP:
         self.convergence_data = []
         
         logger.info(f"Initialized ACO with {self.n_ants} ants for {self.n_cities} cities")
+        logger.info(f"Graph type: {'Symmetric (undirected)' if self.symmetric else 'Asymmetric (directed)'}")
         logger.info(f"Using batch size: {self.batch_size} (numba parallel processing)")
         if use_sparse and hasattr(self, 'valid_connections'):
             density = np.mean(self.valid_connections)
@@ -270,7 +274,7 @@ class FastAntColonyTSP:
         return path_array.tolist(), float(distance)
     
     def _update_pheromones_vectorized(self, all_paths: List[List[int]], all_distances: List[float]):
-        """Vectorized pheromone update"""
+        """Vectorized pheromone update - handles both symmetric and asymmetric cases"""
         # Evaporation
         self.pheromones *= (1 - self.evaporation_rate)
         
@@ -282,8 +286,12 @@ class FastAntColonyTSP:
                 from_cities = path_array
                 to_cities = np.roll(path_array, -1)
                 
+                # Always update the direction traveled
                 self.pheromones[from_cities, to_cities] += pheromone_deposit
-                self.pheromones[to_cities, from_cities] += pheromone_deposit
+                
+                # For symmetric graphs, also update reverse direction
+                if self.symmetric:
+                    self.pheromones[to_cities, from_cities] += pheromone_deposit
     
     def solve(self, verbose: bool = True, early_stopping: int = 50) -> Tuple[List[int], float]:
         """Solve TSP using optimized batch ACO"""
@@ -357,12 +365,13 @@ if __name__ == "__main__":
     # Initialize ACO solver
     aco = FastAntColonyTSP(
         distance_matrix=distances,
-        n_ants=10, # apparently 100 ants should be enough, despite the number of cities
+        n_ants=100, # apparently 100 ants should be enough, despite the number of cities
         n_iterations=100,
         alpha=1.0,
         beta=2.0,
         evaporation_rate=0.3,
-        q=100
+        q=100,
+        symmetric=False,
     )
 
     logger.info("Starting ACO optimization...")
@@ -372,18 +381,21 @@ if __name__ == "__main__":
     logger.info(f"Distance: {best_distance:.2f}")
     logger.info(f"Path length: {len(best_path)}")
 
-    # N.B. m[j][i] *should* give the weight from `i` to `j`.
+    # N.B. m[i][j] gives the weight from `i` to `j`.
     total_dist = 0
     for i, p in enumerate(best_path):
         if i < len(best_path) - 1:
-            logger.info(f"{best_path[i]} -> {best_path[i + 1]} dist = {distances[best_path[i+1]][best_path[i]]}")
-            total_dist += distances[best_path[i+1]][best_path[i]]
+            logger.info(f"{best_path[i]} -> {best_path[i + 1]} dist = {distances[best_path[i]][best_path[i+1]]}")
+            total_dist += distances[best_path[i]][best_path[i+1]]
         else:
             logger.info(f"{best_path[i]} -> {best_path[0]} dist = {distances[best_path[0]][best_path[i]]}")
-            total_dist += distances[best_path[0]][best_path[i]]
+            total_dist += distances[best_path[i]][best_path[0]]
 
-    logger.info(f"Our observed distance: {total_dist}")
-    
+    logger.info(f"Our observed distance (i->j): {total_dist}")
+    if total_dist != best_distance:
+        logger.fatal(f"observerd distance {total_dist} doesn't match {best_distance}")
+        sys.exit(1)
+
     # set the new ordering
     segments = [None] * n
     f = open("hq-segs")
