@@ -2,6 +2,7 @@
 
 import psycopg2
 from psycopg2.extras import execute_values
+# from psycopg2.extensions import AsIs
 import logging
 import sys
 from collections import defaultdict, deque
@@ -33,12 +34,13 @@ logger = logging.getLogger()
 
 logging.basicConfig(
     stream=sys.stdout,
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
 )
 
-room_id = '!kxwQeJPhRigXSZrHqf:matrix.org'
+#room_id = '!kxwQeJPhRigXSZrHqf:matrix.org'
+room_id = '!OGEhHVWSdvArJzumhm:matrix.org'
 
 conn = psycopg2.connect("dbname=test")
 conn.set_session(autocommit=True)
@@ -68,9 +70,9 @@ def dump_state():
     )
     c.execute("""
         UPDATE state SET type=sq.type, state_key=sq.state_key
-        FROM (SELECT event_id, type, state_key FROM state_groups_state) AS sq
+        FROM (SELECT event_id, type, state_key FROM state_groups_state WHERE room_id=%s) AS sq
         WHERE state.event_id = sq.event_id
-    """)
+    """, [room_id])
     c.close()
 
 cursor = conn.cursor()
@@ -123,16 +125,12 @@ last_sg_id = None # the SG id being accumulated
 sg = {} # sg[(type,key)] = event_id. the current stategroup being accumulated (with id last_sg_id)
 type_dict = {} # type_dict[evemt_id] = (type,key) for remembering the type of a given event id
 
-cursor.execute("select sg_id from minhashes order by ordering")
-sg_id_list = cursor.fetchall()
+cursor.execute("select sg_id from minhashes where room_id=%s order by ordering", [room_id])
+sg_id_list = [row[0] for row in cursor.fetchall()]
 
 # to visualise the resulting reordering:
 # select * from (select branch, sg_id, sg_id-lag(sg_id) over (order by branch, sg_id) as l from minhashes order by branch, sg_id) l where l.l<0;
-#
-# XXX: THIS IS WRONG, as we haven't linearised the branches right
-# In practice, this now compresses down to 8281 rows (compared to 8214 rows for Kahn ordering, somehow)
-# relative to 8436 without the reordering.  The flipflopping now looks like:
-#
+# The flipflopping now looks like:
 # select start_index, start_sg_id, count(*) from state group by start_index, start_sg_id having count(*)>10 order by start_index;
 
 batch_size = 100
@@ -143,14 +141,29 @@ for i in range(0, len(sg_id_list), batch_size):
 
     logger.info(f"i={i}, (sg {sg_id_list[i]})")
 
+    # ordered_sg_ids = [(sg_id, i) for i, sg_id in enumerate(slice)]
+
+    # # jump through hoops to preserve the ordering in which we process the state
+    # cursor.execute("""
+    #     WITH ordered_sg_ids (sg_id, sort_order) AS (VALUES %s)
+    #     SELECT state_group, type, state_key, event_id
+    #     FROM state_groups_state 
+    #     JOIN ordered_sg_ids o on state_group = sg_id
+    #     WHERE state_group = ANY(%s)
+    #     ORDER BY o.sort_order
+    # """,  (AsIs(','.join(cursor.mogrify("(%s,%s)", x).decode('utf-8') for x in ordered_sg_ids)), slice))
+
     cursor.execute("""
         SELECT state_group, type, state_key, event_id
         FROM state_groups_state 
         WHERE state_group = ANY(%s)
-        ORDER BY state_group
-    """, [slice])
+    """,  [slice])
+    # manually reorder rows in python rather than mess around with sql
+    sg_to_i = { sg: i for (i, sg) in enumerate(slice) }
+    rows = cursor.fetchall()
+    rows.sort(key=lambda row: sg_to_i[row[0]])
 
-    for (sg_id, event_type, state_key, event_id) in cursor.fetchall():
+    for (sg_id, event_type, state_key, event_id) in rows:
         logger.debug('')
         logger.debug(f"Checking {sg_id} {event_type} {state_key} {event_id}")
         logger.debug('')

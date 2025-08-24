@@ -3,6 +3,8 @@
 A very hacky bunch of experiments, playing with different algorithms for ordering Matrix state sets
 in a temporal table as close together as possible for maximum efficiency.
 
+This is effectively a series of python notebooks, not really intended for anyone but me.
+
 TL;DR: current pipeline is:
 ```bash
  ./calc_minhash.py
@@ -12,7 +14,7 @@ TL;DR: current pipeline is:
 
 * compress.py
   * walks synapse's SG tables for a given room_id, turning them into a new temporal table called `state`, which tracks in which SG ID each event_id got added and removed from the current state set.
-  * the resulting temporal table is 8436 rows (from 79690 state group state rows, and across 7376 state groups, max room state of 465 state events, for #nvi)
+  * the resulting temporal table is 8436 rows (from 79,690 state group state rows, and across 7376 state groups, total state events 7068, max room state of 465 state events, for #nvi)
 * compress_memoised.py
   * does the same, but shifts most of the processing from SQL to Python and collapses the results of the recursive SGS queries, speeding things up ~100x and saving RAM.  #nvi goes from 30s to 500ms or so, and 6MB of RAM.  Can handle big tables like Matrix HQ (150GB of state group state; roughly 1B rows, 410K SGs, max state 133K events) in an hour or so.
   * However, the algorithm proves not to do well in the face of unstable state, especially when Synapse flipflops storing different SGs in the event of races of lots of state traffic and/or state resets.  This means Matrix HQ only compresses down to 8GB and 77,367,633 rows; it should be much better.
@@ -46,16 +48,17 @@ TL;DR: current pipeline is:
   * another option could be DFS through the MST of the resulting distances.
     * which looks quite good - but by default clusters in ascending order... and then descending again, meaning it uses roughly twice the storage that it should: 15606 rows.
     * so can we change the distance calculation to encourage it to prioritise IDs going up?
-  * YES! BFS works well, and gives 8045 rows. Given the theoretical minimum is 7376 + 465 = 7841 (ignoring any state churn at all), this is pretty good!
+  * YES! BFS on the MST works well, and gives 8045 rows. Given the theoretical minimum is 7376 + 465 = 7841 (ignoring any state churn at all), this is pretty good!
     * Visually there are still some odd ones out though. Plus, this requires O(N^2) to calculate the distances between all the SG LSH bands
     * It does flap back and forth a bit still; worst-case 30 times on the dataset (down from 46 times)
 * calc_segmented_mst.py
   * fork of calc_hamming.py which first segments the SG list based on jumps and branch points, and then applies the MST BFS to the resulting segments, looking at the hamming distance from the end to the start of each segment.
   * Effectively, it's a clustering strategy - a hybrid between calc_branches and calc_hamming
   * this means we only have 76 segments to order, so it's much more efficient than doing all 7280 SGs
-  * however, it doesn't seem to work quite as well - compresses to 8796 thanks to some flipflopping.
-  * Expanding the cut points to any point in time doesn't help (=> 8869 rows)
+  * however, it doesn't seem to work quite as well - compresses to 8796 thanks to some flipflopping, or 8483 after some bugfixes.
+  * Expanding the cut points to any point in time doesn't help (=> 8869 rows, or 8746 after bugfixes)
   * The problem seems to be that the MST contains lead nodes which end up inserted in a bad order; would be better to exclude them from the MST and then manually slot them in based on distance or even chronology
+  * on the first 85K SGs in HQ, this returns 357K state table rows (having expanded minhash search for branchpoints to the whole table to avoid islands: 2601 segments), or 382K (looking just to past & future branchpoints; 2400 segments)
 * calc_segmented_msa.py
   * alternatively, we could try calculating the optimal branching (aka minimum weight spanning arborescence), which is effectively the MST of the directed graph and BFS it.
   * This is what calc_branches.py was clumsily converging on - however, it would suffer the same problem of the extremities of the branches not being aligned. TSP should be better.
@@ -63,11 +66,24 @@ TL;DR: current pipeline is:
 * calc_segmented_tsp.py
   * fork of calc_segmented_mst.py which instead treats it as the travelling salesperson problem between clusters, given that's what we're actually doing here, and given we only have 76 rows to play with.
   * Using elkai, this returns 7901 and only takes 900ms for 76 segments - so our best yet.
+  * For the first 85K SGs in HQ, this returns 296K state table rows (out of 16,921,672 state group state entries; 78,493 total events; 2391 segments), which feels high - we expect 10% compression based on #nvi, not 17%.
+     * However, something feels wrong - querying SG 599996791 returns bogus values
+     * Also, calc_state ended up finding loads of trailing SGs like 397753848 which it should already have come across... but didn't, or has subsequently forgotten.
+     * this is because we incorrectly specified an 8-band minimum overlap for LSH bands, and we ended up with fully disconnected islands as a result. Reducing to 1 band should avoid this.
+    * Trying again with fewer disconnected islands (1-band overlap, but searching only past-for-prev and future-for-next SGs after jumps), we get 273K state rows: not a great improvement.
+     * querying 599996791 still returns bogus values (just 3000 state events trailing from SG 397764923).
+* aco.py
+  * Ant Colony Optimisation solver to TSP which takes the distances matrix output from calc_segmented_tsp.py and generates an ordering from it as a way of doing faster TSP.
+
 * calc_state.py
   * fork of compress_dag_ordered.py which loads the state in the order from calc_branches/hilbert/hamming/segmented_mst/segmented_tsp and compresses it.
 
 Next steps:
  * consider using the state DAG to get better similarity for adjacent temporal table rows
+ * try parellised ACO for faster TSP
+ * **try falling back to minhash comparison if we fail to find branch points after a jump, to avoid islands which then cause thrashing in any algorithm**
+ * try redefining distance 16 to be much higher - won't cause islands, but will discourage hitting it by accident?
+ * figure out why 599996791 returns wrong values in the value table
 
 ## Dumping state
 
@@ -86,3 +102,11 @@ cat sg.csv| psql test -c 'COPY state_groups FROM STDIN WITH CSV HEADER'
 cat sge.csv| psql test -c 'COPY state_group_edges FROM STDIN WITH CSV HEADER'
 zstdcat sgs.zstd | pv | psql test -c 'COPY state_groups_state FROM STDIN WITH CSV HEADER'
 ```
+
+## Perf
+
+ Running this on the first 85K SGs of Matrix HQ (out of 410K):
+  * Takes 1h of calc_minhash (but isn't remotely memoised or parallelised yet)
+  * Takes 10 minutes to find all the branch points (2391 segments)
+  * TSP via elkai takes 5 hours, and produces 310K temporal state table rows (not great)
+  * TSP via ACO takes about 60 seconds.

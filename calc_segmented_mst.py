@@ -38,13 +38,14 @@ logging.basicConfig(
 #     )::float / array_length(sig1, 1);
 # $$ LANGUAGE sql IMMUTABLE;
 
-room_id = '!kxwQeJPhRigXSZrHqf:matrix.org'
+# room_id = '!kxwQeJPhRigXSZrHqf:matrix.org'
+room_id = '!OGEhHVWSdvArJzumhm:matrix.org'
 
 conn = psycopg2.connect("dbname=test") #, cursor_factory=LoggingCursor)
 conn.set_session(autocommit=True)
 cursor = conn.cursor()
 
-cursor.execute("SELECT sg_id FROM minhashes order by sg_id")
+cursor.execute("SELECT sg_id FROM minhashes WHERE room_id=%s ORDER BY sg_id", [room_id])
 sg_id_list = [ row[0] for row in cursor.fetchall() ]
 
 print("sg_id_list")
@@ -56,21 +57,21 @@ lsh_bands = {} # sg_id => []
 
 section_starts = []
 section_ends = []
-cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes order by sg_id limit 1")
+cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes WHERE room_id=%s order by sg_id limit 1", [room_id])
 row = cursor.fetchone()
 section_starts.append( { "sg_id": row[0], "lsh_bands": row[1], "minhash": row[2] } )
 lsh_bands[row[0]] = row[1]
 ends = []
-cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where add_count + gone_count > 10 order by sg_id")
+cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where add_count + gone_count > 10 and room_id=%s order by sg_id", [room_id])
 for row in cursor.fetchall():
     section_starts.append( { "sg_id": row[0], "lsh_bands": row[1], "minhash": row[2] } )
     ends.append( sg_id_list[sg_id_list.index(row[0]) - 1] )
     lsh_bands[row[0]] = row[1]
-cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where sg_id = any(%s) order by sg_id", [ends])
+cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where room_id = %s and sg_id = any(%s) order by sg_id", [room_id, ends])
 for row in cursor.fetchall():
     section_ends.append( { "sg_id": row[0], "lsh_bands": row[1], "minhash": row[2] } )
     lsh_bands[row[0]] = row[1]
-cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes order by sg_id desc limit 1")
+cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where room_id = %s order by sg_id desc limit 1", [room_id])
 row = cursor.fetchone()
 section_ends.append( { "sg_id": row[0], "lsh_bands": row[1], "minhash": row[2] } )
 lsh_bands[row[0]] = row[1]
@@ -94,8 +95,12 @@ cut_before = set() # we cut before the dest of links to the future
 # in terms of minhash proximity
 for i, section in enumerate(sections):
     c = conn.cursor()
+    search_fail = 0
     if i > 0:
         # closest start point - looking only into the past:
+        # XXX: if we only look into the past for previous branchpoints and future for future branchpoints
+        # then we can end up with finding none and forming islands, which inevitably cause ugly jumps in both TSP & MST.
+        # in practice if we search the whole space however we end up with worse results though.
         start = section['start']
         # XXX: check this actually does an efficient query
         c.execute("""
@@ -103,18 +108,20 @@ for i, section in enumerate(sections):
                 SELECT %s AS bands
             )
             SELECT sg_id, lsh_bands FROM minhashes, query_bands
-            WHERE (
-                SELECT COUNT(*)
-                FROM unnest(lsh_bands) AS band
-                WHERE band = ANY(query_bands.bands)
-            ) >= 8
-            -- WHERE lsh_bands && query_bands.bands
+            -- WHERE (
+            --    SELECT COUNT(*)
+            --    FROM unnest(lsh_bands) AS band
+            --    WHERE band = ANY(query_bands.bands)
+            -- ) >= 8
+            WHERE lsh_bands && query_bands.bands
             AND sg_id < %s
+            AND room_id = %s
             ORDER BY jaccard_similarity(minhash, %s) DESC, sg_id DESC
             LIMIT 1;
         """, [
             start['lsh_bands'],
             start['sg_id'],
+            room_id,
             start['minhash'],
         ])
         row = c.fetchone()
@@ -124,6 +131,7 @@ for i, section in enumerate(sections):
             cut_after.add(row[0])
         else:
             logger.info(f"failed to find start branch point for { start['sg_id'] }")
+            search_fail += 1
 
     if i < len(section_starts) - 1:
         # closest end point - currently looking only into the future, to avoid risk of loops
@@ -133,18 +141,20 @@ for i, section in enumerate(sections):
                 SELECT %s AS bands
             )
             SELECT sg_id, lsh_bands FROM minhashes, query_bands
-            WHERE (
-                SELECT COUNT(*)
-                FROM unnest(lsh_bands) AS band
-                WHERE band = ANY(query_bands.bands)
-            ) >= 8
-            -- WHERE lsh_bands && query_bands.bands
+            -- WHERE (
+            --    SELECT COUNT(*)
+            --    FROM unnest(lsh_bands) AS band
+            --    WHERE band = ANY(query_bands.bands)
+            --) >= 8
+            WHERE lsh_bands && query_bands.bands
             AND sg_id > %s
+            AND room_id = %s
             ORDER BY jaccard_similarity(minhash, %s) DESC, sg_id ASC
             LIMIT 1;
         """, [
             end['lsh_bands'],
             end['sg_id'],
+            room_id,
             end['minhash'],
         ])
         row = c.fetchone()
@@ -154,14 +164,20 @@ for i, section in enumerate(sections):
             cut_before.add(row[0])
         else:
             logger.info(f"failed to find end branch point for { end['sg_id'] }")
+            search_fail += 1
+
+    if search_fail == 2:
+        logger.warning(f"Failed to find either start or end for section { start['sg_id'] }->{ end['sg_id'] }")
 
 # grab the LSH bands for SGs on the other side of cut boundaries
 other_sgs = set()
 for cut in cut_before:
     other_sgs.add( sg_id_list[sg_id_list.index(cut) - 1] )
 for cut in cut_after:
-    other_sgs.add( sg_id_list[sg_id_list.index(cut) + 1] )
-cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where sg_id = any(%s) order by sg_id", [list(other_sgs)])
+    i = sg_id_list.index(cut) + 1
+    if i < len(sg_id_list):
+        other_sgs.add( sg_id_list[i] )
+cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where room_id = %s and sg_id = any(%s) order by sg_id", [room_id, list(other_sgs)])
 for row in cursor.fetchall():
     lsh_bands[row[0]] = row[1]
 
