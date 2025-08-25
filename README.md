@@ -100,7 +100,7 @@ Using ~20% of Matrix HQ as a sample set (large enough to be representative; smal
    * 2401 segments
    * 253,125 rows in the temporal `state` table (with elkai)
 
-Therefore we get a 1.49% compression ratio (66x improvement)
+Therefore we get a 1.49% compression ratio, row-wise (253K / 16.9M) (66x improvement)
 
 This can likely be improved further by:
  * Using linearised state DAGs as the ordering for the temporal table rather than solving TSP
