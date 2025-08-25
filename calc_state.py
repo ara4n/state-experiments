@@ -34,7 +34,7 @@ logger = logging.getLogger()
 
 logging.basicConfig(
     stream=sys.stdout,
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
 )
@@ -125,7 +125,7 @@ last_sg_id = None # the SG id being accumulated
 sg = {} # sg[(type,key)] = event_id. the current stategroup being accumulated (with id last_sg_id)
 type_dict = {} # type_dict[evemt_id] = (type,key) for remembering the type of a given event id
 
-cursor.execute("select sg_id from minhashes where room_id=%s order by ordering", [room_id])
+cursor.execute("select sg_id from minhashes where room_id=%s order by ordering, sg_id", [room_id])
 sg_id_list = [row[0] for row in cursor.fetchall()]
 
 # to visualise the resulting reordering:
