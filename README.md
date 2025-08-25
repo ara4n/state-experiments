@@ -12,6 +12,110 @@ TL;DR: current pipeline is:
  ./calc_state.py
  ```
 
+ ...but each phase needs some manual handholding to specify the right room etc.
+
+## Design
+
+The design which this has currently converged on is:
+
+TL;DR:
+ * order state groups by ID
+ * cut up the list wherever state jump into 'sections'
+ * cut it up further into 'segments' to find points state may jump from or to
+ * reorder these segments via state set similarilty, using travelling salesperson problem optimisation
+ * create a temporal `state` table which tracks how the state sets evolve (based on this ordering, rather than chronologicity, in order to compress flipflopping state sets nicely).
+
+In detail:
+
+Firstly, summarise the state sets as of each state group (using state groups as convenient ~chronological identifiers of how state evolves): `calc_minhash.py`:
+ * Select a room ID
+ * Grab the state group DAG into RAM from the `state_group_edges` table
+ * Walk through it in ascending SG ID (i.e. chronological order as seen by the HS)
+ * Calculate the state set at each SG ID
+   * memoizing the sets rather than SQL as you go to speed things up 2-3x
+   * pruning SGs which have served their purpose from RAM as you go, to avoid memory ballooning
+ * Summarise the state sets in a new table, one row per state group, called `minhashes` which:
+   * Tracks how many new state events get added or removed in each state set (`add_count` and `gone_count` columns)
+   * Calculates an 128-long [minhash](https://en.wikipedia.org/wiki/MinHash) signature of the state set.
+     * This works by hashing the state set 128 times, each using a consistent different seed, and storing the numerically minimum 32-bit hash value each time in the array.
+     * As a result, small changes in set membership will cause small changes in the minhash signature, allowing you to compare them as a proxy for comparisons on the actual set.
+   * Calculates 16 LSH ([Locality Sensitive Hashing](https://en.wikipedia.org/wiki/Locality-sensitive_hashing)) bands - simply splitting the 128 minhash array into 16 buckets of 8, and hashing each one.
+ * This means you can rapidly find similar state sets by:
+   * Searching for rows which have at least one LSH band in common (which can be indexed efficiently via GIN in postgres)
+   * If there are no LSH bands in common, fall back to comparing minhash values in common (to minimise islands of unrelated state, which will never compress well)
+   * Then calculating similarity (e.g. jaccard index) for the matching rows and picking the highest jaccard index.
+ * One can eyeball the resulting `minhashes` table by piping the output of this (in a 24-bit color capable terminal like iTerm) through `colorize.py`:
+   * `select sg_id, add_count, gone_count, array(select lpad(to_hex(x), 8, '0') from unnest(lsh_bands) as x) from minhashes order by sg_id;`
+   
+Then, calculate an ordering over the rows of the minhashes table in order to put similar rows (i.e. state sets) closest to each other (`calc_segmented_tsp.py`), so they can compress easily in a temporal table: 
+ * First, look for rows where `add_group + gone_count` jumps more than N (where N=10 seems good enough).  This is either due to a new hunk of state being set, received, or a state reset.
+ * We then load the sequence of state groups, and split the list into "sections" based on these jump points.
+ * Then, we go through each section, looking for "branch points", i.e:
+   * Finding the most similar preceeding state-set to the starting state-set of that section
+   * Finding the most similar succeeding state-set to the ending state-set of that section
+   * (In practice, if we search the whole minhashes table for branch points rather than just looking in the past for prior branchpoints or future for subsequent ones, we get worse results)
+ * We then cut each section into "segments", wherever there's a branch point.
+ * As we go, we load the LSH & minhashes for the segment start/end points from the minhashes table.
+ * Finally, having split the SG ordering up into segments, we reorder them to minimise the similarity distance from the end of one segment to the start of the next.
+   * This is effectively solving the Travelling Salesperson Problem (TSP).
+   * We calculate a distance adjacency matrix (`distance[i][j] = distance(i -> j)`) similarly to when finding the branchpoints: 
+     * If LSH bands in common, nearness is 8x the number of LSH bands in common. (Currently approximated as the length of the overlapping LSH band values, although it really should be the hamming distance)
+     * Failing that, nearness is 1x the number of minhash bands in common.
+     * Distance is then 128 - nearness (given TSP optimises for minimal distance)
+   * TSP optimisation is NP-hard: a complete solution means comparing every possible path - so O(N!), which is completely impractical.
+   * Instead, by default we solve using [elkai](https://github.com/fikisipi/elkai) ([Lin-Kernighan Heuristic](https://en.wikipedia.org/wiki/Lin%E2%80%93Kernighan_heuristic))
+     * This takes ~4.5h on my M1 MBP for 2,400 segments, but seems to provide a good result.
+   * Alternatively, we can use [Ant Colony Optimisation](https://en.wikipedia.org/wiki/Ant_colony_optimization_algorithms) to get a ~5x worse result, but in ~60s: `aco.py`.
+ * Finally, we update the `ordering` column of the `minhashes` table to be a column you can `ORDER BY` in order to get the shuffled order.
+ * One can eyeball the resulting ordered `minhashes` table using a similar query as before.
+   * `select sg_id, ordering, add_count, gone_count, array(select lpad(to_hex(x), 8, '0') from unnest(lsh_bands) as x) from minhashes order by ordering, sg_id;`
+
+Finally, we actually calculate the temporal state table: `calc_state.py`:
+ * We create a new table called `state` which tracks which state events exist as of a given state group.
+ * We walk through the `minhashes` table, ordered by our new ordering (i.e. ordered by set similarity, not chronologically).
+   * Each row describes the state set at a given state group.
+ * We load the state-set for each state group
+ * We compare it with the previous state-set
+ * For each new state event which has appeared, we add a new row to the `state` table, tracking the row index (and SG ID for ease of debugging) where that event appeared.
+ * For each state event which has disappeared, we update the most recent row for that event in the `state` table, tracking the row index (and SG ID) where it disappeared.
+ * Then, we can simply and efficiently query the current state of the room as of a given point:
+   * current state: `select * from state where end_index is null`
+   * historical state: `select * from state where start_index <= 50000 and (end_index is null or end_index > 50000);`
+ * With appropriate indexes, this ends up being ~5x faster than doing a recursive SG lookup in SQL.
+
+In future, a much better heuristic for reordering the state groups by similarity would likely be to use a state DAG.
+But as we don't have a state DAG currently, we use the brute-force minhash similarity approach instead.
+The good news is that we can compress existing tables by brute-force (like this), and then switch to state-DAG-linearisation for efficiently maintaining the temporal table in future.
+
+## Results
+
+Using ~20% of Matrix HQ as a sample set (large enough to be representative; small enough to fit on my disk and be relatively fast to process):
+ * Considered state groups with IDs < 600M
+ * Input:
+   * 82,413 state groups (83,052 in the `state_groups` table; 82,413 groups based on edges)
+   * 81,545 `state_group_edges`
+   * 16,921,672 `state_groups_state` entries
+   * 78,493 total state events
+ * Output
+   * 2401 segments
+   * 253,125 rows in the temporal `state` table (with elkai)
+
+Therefore we get a 1.49% compression ratio (66x improvement)
+
+This can likely be improved further by:
+ * Using linearised state DAGs as the ordering for the temporal table rather than solving TSP
+ * Being smarter about 
+
+ ## Perf
+
+ Running this on the first 85K SGs of Matrix HQ (out of 410K):
+  * Takes 1h of calc_minhash (but isn't remotely memoised or parallelised yet)
+  * Takes 10 minutes to find all the branch points (2391 segments)
+  * TSP via elkai takes 5 hours
+  * TSP via ACO takes about 60 seconds.
+
+## Notes
+
 * compress.py
   * walks synapse's SG tables for a given room_id, turning them into a new temporal table called `state`, which tracks in which SG ID each event_id got added and removed from the current state set.
   * the resulting temporal table is 8436 rows (from 79,690 state group state rows, and across 7376 state groups, total state events 7068, max room state of 465 state events, for #nvi)
@@ -72,7 +176,8 @@ TL;DR: current pipeline is:
      * this is because we incorrectly specified an 8-band minimum overlap for LSH bands, and we ended up with fully disconnected islands as a result. Reducing to 1 band should avoid this.
     * Trying again with fewer disconnected islands (1-band overlap, but searching only past-for-prev and future-for-next SGs after jumps), we get 273K state rows: not a great improvement.
      * querying 599996791 still returns bogus values (just 3000 state events trailing from SG 397764923).
-    * Trying again with no disconnected islands (by failing back to minhash hamming distance if no LSHes match), we get 253K (and some weird jumps) - 1.5% compression.
+    * Trying again with no disconnected islands (by failing back to minhash hamming distance if no LSHes match), we get 253K - 1.5% compression.
+    * TODO: we might want to deliberately create islands, but order them chronologically (by sg_id), in order to speed up the TSP solver.
 * aco.py
   * Ant Colony Optimisation solver to TSP which takes the distances matrix output from calc_segmented_tsp.py and generates an ordering from it as a way of doing faster TSP.
   * First cut (100 ants, 100 iterations) converges - but the end result generates 1.7M state rows :/
@@ -117,14 +222,6 @@ cat sge.csv| psql test -c 'COPY state_group_edges FROM STDIN WITH CSV HEADER'
 zstdcat sgs.zstd | pv | psql test -c 'COPY state_groups_state FROM STDIN WITH CSV HEADER'
 ```
 
-## Perf
-
- Running this on the first 85K SGs of Matrix HQ (out of 410K):
-  * Takes 1h of calc_minhash (but isn't remotely memoised or parallelised yet)
-  * Takes 10 minutes to find all the branch points (2391 segments)
-  * TSP via elkai takes 5 hours, and produces 310K temporal state table rows (not great)
-  * TSP via ACO takes about 60 seconds.
-
 ## Compare with rust-synapse-state-compressor
 
 ...gives 30% compression with default params on HQ:
@@ -132,18 +229,22 @@ zstdcat sgs.zstd | pv | psql test -c 'COPY state_groups_state FROM STDIN WITH CS
 ```
 % time ./synapse_compress_state -p "postgresql://localhost/test" -r '!OGEhHVWSdvArJzumhm:matrix.org' -o out.sql -t
 Fetching state from DB for room '!OGEhHVWSdvArJzumhm:matrix.org'...
-  [2m] 16921727 rows retrieved                                                                                                                                                                                                                                                      Got initial state from database. Checking for any missing state groups...
+  [2m] 16921727 rows retrieved
+Got initial state from database. Checking for any missing state groups...
 Fetched state groups up to 599996915
 Number of state groups: 83052
 Number of rows in current table: 16921672
 Compressing state...
-[00:15:21] ████████████████████ 83052/83052 state groups                                                                                                                                                                                                                            Number of rows after compression: 5228327 (30.90%)
+[00:15:21] ████████████████████ 83052/83052 state groups
+Number of rows after compression: 5228327 (30.90%)
 Compression Statistics:
   Number of forced resets due to lacking prev: 42
   Number of compressed rows caused by the above: 203834
   Number of state groups changed: 7691
 Checking that state maps match...
-[00:08:06] ████████████████████ 83052/83052 state groups                                                                                                                                                                                                                            New state map matches old one
+[00:08:06] ████████████████████ 83052/83052 state groups
+New state map matches old one
 Writing changes...
-[00:00:04] ████████████████████ 83052/83052 state groups                                                                                                                                                                                                                            ./synapse_compress_state -p "postgresql://localhost/test" -r  -o out.sql -t  4941.68s user 17.43s system 324% cpu 25:30.51 total
+[00:00:04] ████████████████████ 83052/83052 state groups 
+./synapse_compress_state -p "postgresql://localhost/test" -r  -o out.sql -t  4941.68s user 17.43s system 324% cpu 25:30.51 total
 ```
