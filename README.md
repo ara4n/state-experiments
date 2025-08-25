@@ -20,7 +20,7 @@ The design which this has currently converged on is:
 
 TL;DR:
  * order state groups by ID
- * cut up the list wherever state jump into 'sections'
+ * cut up the list wherever state jumps significantly, into 'sections'
  * cut it up further into 'segments' to find points state may jump from or to
  * reorder these segments via state set similarilty, using travelling salesperson problem optimisation
  * create a temporal `state` table which tracks how the state sets evolve (based on this ordering, rather than chronologicity, in order to compress flipflopping state sets nicely).
