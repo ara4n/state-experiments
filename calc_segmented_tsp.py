@@ -50,7 +50,8 @@ sg_id_list = [ row[0] for row in cursor.fetchall() ]
 logging.debug("sg_id_list")
 logging.debug(' '.join(f'{id:10d}' for id in sg_id_list))
 
-lsh_bands = {} # sg_id => []
+lsh_bands = {} # sg_id => [ 16 band vals ]
+minhashes = {} # sg_id => [ 128 minhash vals ]
 
 # we partition into sections whenever there is a jump:
 
@@ -60,20 +61,24 @@ cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes WHERE room_id = 
 row = cursor.fetchone()
 section_starts.append( { "sg_id": row[0], "lsh_bands": row[1], "minhash": row[2] } )
 lsh_bands[row[0]] = row[1]
+minhashes[row[0]] = row[2]
 ends = []
 cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where room_id = %s and add_count + gone_count > 10 order by sg_id", [room_id])
 for row in cursor.fetchall():
     section_starts.append( { "sg_id": row[0], "lsh_bands": row[1], "minhash": row[2] } )
     ends.append( sg_id_list[sg_id_list.index(row[0]) - 1] )
     lsh_bands[row[0]] = row[1]
+    minhashes[row[0]] = row[2]
 cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where room_id = %s and sg_id = any(%s) order by sg_id", [room_id, ends])
 for row in cursor.fetchall():
     section_ends.append( { "sg_id": row[0], "lsh_bands": row[1], "minhash": row[2] } )
     lsh_bands[row[0]] = row[1]
+    minhashes[row[0]] = row[2]
 cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where room_id = %s order by sg_id desc limit 1", [room_id])
 row = cursor.fetchone()
 section_ends.append( { "sg_id": row[0], "lsh_bands": row[1], "minhash": row[2] } )
 lsh_bands[row[0]] = row[1]
+minhashes[row[0]] = row[2]
 
 sections = []
 for i, b in enumerate(section_starts):
@@ -92,9 +97,8 @@ cut_before = set() # we cut before the dest of links to the future
 
 # find the branchpoints where these segments ideally belong from
 # in terms of minhash proximity
+c = conn.cursor()
 for i, section in enumerate(sections):
-    c = conn.cursor()
-    search_fail = 0
     if i > 0:
         # closest start point - looking only into the past:
         start = section['start']
@@ -103,7 +107,7 @@ for i, section in enumerate(sections):
             WITH query_bands AS (
                 SELECT %s AS bands
             )
-            SELECT sg_id, lsh_bands FROM minhashes, query_bands
+            SELECT sg_id, lsh_bands, minhash FROM minhashes, query_bands
             -- WHERE (
             --    SELECT COUNT(*)
             --    FROM unnest(lsh_bands) AS band
@@ -119,10 +123,29 @@ for i, section in enumerate(sections):
         if row is not None:
             logger.info(f"found start branch point {row[0]} for { start['sg_id'] }")
             lsh_bands[row[0]] = row[1]
+            minhashes[row[0]] = row[2]
             cut_after.add(row[0])
         else:
-            logger.info(f"failed to find start branch point for { start['sg_id'] }")
-            search_fail += 1
+            logger.info(f"failed to find start branch point for { start['sg_id'] } - fall back to minhashes")
+            c.execute("""
+                WITH query_minhash AS (
+                    SELECT %s AS minhash
+                )
+                SELECT sg_id, lsh_bands, minhashes.minhash FROM minhashes, query_minhash
+                WHERE minhashes.minhash && query_minhash.minhash
+                AND sg_id < %s
+                AND room_id = %s
+                ORDER BY jaccard_similarity(minhashes.minhash, %s) DESC, sg_id DESC
+                LIMIT 1;
+            """, [ start['minhash'], start['sg_id'], room_id, start['minhash'] ])
+            row = c.fetchone()
+            if row is not None:
+                logger.info(f"found start branch point {row[0]} for { start['sg_id'] } via minhash")
+                lsh_bands[row[0]] = row[1]
+                minhashes[row[0]] = row[2]
+                cut_after.add(row[0])
+            else:
+                logger.warning(f"failed to find start branch point for { start['sg_id'] } entirely")
 
     if i < len(section_starts) - 1:
         # closest end point - currently looking only into the future, to avoid risk of loops
@@ -131,7 +154,7 @@ for i, section in enumerate(sections):
             WITH query_bands AS (
                 SELECT %s AS bands
             )
-            SELECT sg_id, lsh_bands FROM minhashes, query_bands
+            SELECT sg_id, lsh_bands, minhash FROM minhashes, query_bands
             -- WHERE (
             --    SELECT COUNT(*)
             --    FROM unnest(lsh_bands) AS band
@@ -147,13 +170,29 @@ for i, section in enumerate(sections):
         if row is not None:
             logger.info(f"found end   branch point {row[0]} for { end['sg_id'] }")
             lsh_bands[row[0]] = row[1]
+            minhashes[row[0]] = row[2]
             cut_before.add(row[0])
         else:
-            logger.info(f"failed to find end branch point for { end['sg_id'] }")
-            search_fail += 1
-
-    if search_fail == 2:
-        logger.warning(f"Failed to find either start or end for section { start['sg_id'] }->{ end['sg_id'] }")
+            logger.info(f"failed to find end branch point for { end['sg_id'] } - fall back to minhashes")
+            c.execute("""
+                WITH query_minhash AS (
+                    SELECT %s AS minhash
+                )
+                SELECT sg_id, lsh_bands, minhashes.minhash FROM minhashes, query_minhash
+                WHERE minhashes.minhash && query_minhash.minhash
+                AND sg_id > %s
+                AND room_id = %s
+                ORDER BY jaccard_similarity(minhashes.minhash, %s) DESC, sg_id ASC
+                LIMIT 1;
+            """, [ end['minhash'], end['sg_id'], room_id, end['minhash'] ])
+            row = c.fetchone()
+            if row is not None:
+                logger.info(f"found end branch point {row[0]} for { end['sg_id'] } via minhash")
+                lsh_bands[row[0]] = row[1]
+                minhashes[row[0]] = row[2]
+                cut_before.add(row[0])
+            else:
+                logger.warning(f"failed to find end branch point for { end['sg_id'] } entirely")
 
 # grab the LSH bands for SGs on the other side of cut boundaries
 other_sgs = set()
@@ -166,6 +205,7 @@ for cut in cut_after:
 cursor.execute("SELECT sg_id, lsh_bands, minhash FROM minhashes where room_id = %s and sg_id = any(%s) order by sg_id", [room_id, list(other_sgs)])
 for row in cursor.fetchall():
     lsh_bands[row[0]] = row[1]
+    minhashes[row[0]] = row[2]
 
 # check we have all the LSH Bands
 for sg_id in sorted(lsh_bands.keys()):
@@ -205,7 +245,17 @@ def distance(seg1, seg2):
         return 0
     lsh_end = lsh_bands[seg1['ids'][-1]]
     lsh_start = lsh_bands[seg2['ids'][0]]
-    return 16 - len(set(lsh_end) & set(lsh_start))
+    # FIXME: this shouldn't just be the length of the set intersection, but the count of the matching fields
+    lsh_overlap = len(set(lsh_end) & set(lsh_start))
+    if lsh_overlap > 0:
+        return (16 - lsh_overlap) * 8 # normalise to [0,128] like hamming distance on minhashes
+    else:
+        # fall back to minhash overlap
+        minhash_end = minhashes[seg1['ids'][-1]]
+        minhash_start = minhashes[seg2['ids'][0]]
+        # FIXME: this shouldn't just be the length of the set intersection, but the count of the matching fields
+        minhash_overlap = len(set(minhash_start) & set(minhash_end))
+        return (128 - minhash_overlap)
 
 def order_segs(segs):
     n = len(segs)
@@ -227,6 +277,8 @@ def order_segs(segs):
     logging.debug("---" * (n + 1))
     for i in range(n):
         logging.debug(f"{i:2d}|" + " ".join(f'{d:2d}' for d in distances[i]))
+
+    #sys.exit(0)
 
     tour = elkai.solve_int_matrix(distances)
     return tour
