@@ -19,7 +19,8 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
 )
 
-# Parllelised Ant Colony Optimisation solution for directed travelling salesman problem, entirely courtesy of Claude
+# Parallelised Ant Colony Optimisation solution for directed travelling salesman problem, entirely courtesy of Claude
+
 @njit(nogil=True, parallel=True)
 def construct_solutions_batch_numba(distances, pheromones, heuristic, n_cities, alpha, beta, n_ants, seeds, start_city=0):
     """Numba-compiled batch solution construction with GIL released"""
@@ -135,24 +136,31 @@ def construct_single_solution_numba(distances, pheromones, heuristic, n_cities, 
             probabilities[i] = pheromone_val * heuristic_val
             total_prob += probabilities[i]
         
+        # Normalize probabilities
         if total_prob > 0:
             for i in range(n_unvisited):
                 probabilities[i] /= total_prob
         else:
+            # Dead end case: use numerically next city fallback
             uniform_prob = 1.0 / n_unvisited
             for i in range(n_unvisited):
                 probabilities[i] = uniform_prob
         
-        # Selection
-        r = np.random.random()
-        cumulative = 0.0
-        next_city_idx = 0
-        
-        for i in range(n_unvisited):
-            cumulative += probabilities[i]
-            if r <= cumulative:
-                next_city_idx = i
-                break
+        # Selection with numerically-next fallback
+        if total_prob > 0:
+            # Normal roulette wheel selection
+            r = np.random.random()
+            cumulative = 0.0
+            next_city_idx = 0
+            
+            for i in range(n_unvisited):
+                cumulative += probabilities[i]
+                if r <= cumulative:
+                    next_city_idx = i
+                    break
+        else:
+            # Dead end: pick numerically smallest unvisited city
+            next_city_idx = 0
         
         next_city = unvisited_cities[next_city_idx]
         total_distance += distances[current_city, next_city]

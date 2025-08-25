@@ -66,14 +66,28 @@ TL;DR: current pipeline is:
 * calc_segmented_tsp.py
   * fork of calc_segmented_mst.py which instead treats it as the travelling salesperson problem between clusters, given that's what we're actually doing here, and given we only have 76 rows to play with.
   * Using elkai, this returns 7901 and only takes 900ms for 76 segments - so our best yet.
-  * For the first 85K SGs in HQ, this returns 296K state table rows (out of 16,921,672 state group state entries; 78,493 total events; 2391 segments), which feels high - we expect 10% compression based on #nvi, not 17%.
+  * For the first 85K SGs in HQ, this returns 296K state table rows (out of 16,921,672 state group state entries; 78,493 total events; 2391 segments) - which isn't too bad, even though 296K feels high, given 296K / 16.9M is 1.7%.
      * However, something feels wrong - querying SG 599996791 returns bogus values
      * Also, calc_state ended up finding loads of trailing SGs like 397753848 which it should already have come across... but didn't, or has subsequently forgotten.
      * this is because we incorrectly specified an 8-band minimum overlap for LSH bands, and we ended up with fully disconnected islands as a result. Reducing to 1 band should avoid this.
     * Trying again with fewer disconnected islands (1-band overlap, but searching only past-for-prev and future-for-next SGs after jumps), we get 273K state rows: not a great improvement.
      * querying 599996791 still returns bogus values (just 3000 state events trailing from SG 397764923).
+    * Trying again with no disconnected islands (by failing back to minhash hamming distance if no LSHes match), we get 253K (and some weird jumps) - 1.5% compression.
 * aco.py
   * Ant Colony Optimisation solver to TSP which takes the distances matrix output from calc_segmented_tsp.py and generates an ordering from it as a way of doing faster TSP.
+  * First cut (100 ants, 100 iterations) converges - but the end result generates 1.7M state rows :/
+    * Reduced to 1.0M state rows by considering the DAG as directed TSP (apply pheremones only on fwd path, not return path, which sounds bad for ants, which are symmetric)
+      * so 6% compression.
+    * The problem seems to be that it jumps very rapidly from segment 0 to a random one (16 distance back and forth), and then stabilises there.
+      * Is this because segment 0 is actually an island in terms of LSH bands?
+    * Might get fixed by falling back to jaccard on minhashes if jaccard on LSH bands fails?
+      * Nope, that seems to make it worse somehow: 1.2M (1231061) rows with directed ACO and minhash fallback (although minhash fallback did help normal TSP)
+      * we're still seeing jumps of 128 dist in the ACO, which implies there are either islands or bugs in the TSP solution
+    * Alternatively, could we try a heuristic that ants should first try the numerically next unexplored sg_ids rather than random ones if faced with a dead end;
+      * ...which only reduces to 1,167,019 rows.
+    * Trying that but with undirected graph (just to see if ACO performs better) gives... 1,158,098, so no improvement.
+    * There are still loads of misordered state when generating state.
+    * Alternatively, do we have a bug in generating the state rows?
 
 * calc_state.py
   * fork of compress_dag_ordered.py which loads the state in the order from calc_branches/hilbert/hamming/segmented_mst/segmented_tsp and compresses it.
@@ -110,3 +124,26 @@ zstdcat sgs.zstd | pv | psql test -c 'COPY state_groups_state FROM STDIN WITH CS
   * Takes 10 minutes to find all the branch points (2391 segments)
   * TSP via elkai takes 5 hours, and produces 310K temporal state table rows (not great)
   * TSP via ACO takes about 60 seconds.
+
+## Compare with rust-synapse-state-compressor
+
+...gives 30% compression with default params on HQ:
+
+```
+% time ./synapse_compress_state -p "postgresql://localhost/test" -r '!OGEhHVWSdvArJzumhm:matrix.org' -o out.sql -t
+Fetching state from DB for room '!OGEhHVWSdvArJzumhm:matrix.org'...
+  [2m] 16921727 rows retrieved                                                                                                                                                                                                                                                      Got initial state from database. Checking for any missing state groups...
+Fetched state groups up to 599996915
+Number of state groups: 83052
+Number of rows in current table: 16921672
+Compressing state...
+[00:15:21] ████████████████████ 83052/83052 state groups                                                                                                                                                                                                                            Number of rows after compression: 5228327 (30.90%)
+Compression Statistics:
+  Number of forced resets due to lacking prev: 42
+  Number of compressed rows caused by the above: 203834
+  Number of state groups changed: 7691
+Checking that state maps match...
+[00:08:06] ████████████████████ 83052/83052 state groups                                                                                                                                                                                                                            New state map matches old one
+Writing changes...
+[00:00:04] ████████████████████ 83052/83052 state groups                                                                                                                                                                                                                            ./synapse_compress_state -p "postgresql://localhost/test" -r  -o out.sql -t  4941.68s user 17.43s system 324% cpu 25:30.51 total
+```
