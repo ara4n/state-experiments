@@ -21,7 +21,7 @@ logging.basicConfig(
 
 # Parllelised Ant Colony Optimisation solution for directed travelling salesman problem, entirely courtesy of Claude
 @njit(nogil=True, parallel=True)
-def construct_solutions_batch_numba(distances, pheromones, heuristic, n_cities, alpha, beta, n_ants, seeds):
+def construct_solutions_batch_numba(distances, pheromones, heuristic, n_cities, alpha, beta, n_ants, seeds, start_city=0):
     """Numba-compiled batch solution construction with GIL released"""
     all_paths = np.empty((n_ants, n_cities), dtype=np.int32)
     all_distances = np.empty(n_ants, dtype=np.float64)
@@ -31,8 +31,8 @@ def construct_solutions_batch_numba(distances, pheromones, heuristic, n_cities, 
         # Set unique seed for this ant
         np.random.seed(seeds[ant_idx])
         
-        # Start from random city
-        current_city = np.random.randint(0, n_cities)
+        # Always start from specified city
+        current_city = start_city
         all_paths[ant_idx, 0] = current_city
         
         # Track unvisited cities
@@ -102,11 +102,12 @@ def construct_solutions_batch_numba(distances, pheromones, heuristic, n_cities, 
     return all_paths, all_distances
 
 @njit(nogil=True)
-def construct_single_solution_numba(distances, pheromones, heuristic, n_cities, alpha, beta, seed):
+def construct_single_solution_numba(distances, pheromones, heuristic, n_cities, alpha, beta, seed, start_city=0):
     """Single ant solution construction with GIL released"""
     np.random.seed(seed)
     
-    current_city = np.random.randint(0, n_cities)
+    # Always start from specified city
+    current_city = start_city
     path = np.empty(n_cities, dtype=np.int32)
     path[0] = current_city
     
@@ -167,7 +168,7 @@ class FastAntColonyTSP:
                  n_iterations: int = 100, alpha: float = 1.0, beta: float = 2.0,
                  evaporation_rate: float = 0.5, q: float = 100, 
                  use_sparse: bool = True, batch_size: int = None, 
-                 symmetric: bool = True):
+                 symmetric: bool = True, start_city: int = 0):
         """
         Optimized Ant Colony Optimization for TSP with parallel batch processing
         
@@ -182,6 +183,7 @@ class FastAntColonyTSP:
             use_sparse: Use sparse matrix optimizations
             batch_size: Process ants in batches of this size (None = all at once)
             symmetric: True for undirected graphs, False for directed (asymmetric TSP)
+            start_city: City index to always start tours from (default: 0)
         """
         self.distances = distance_matrix.astype(np.float64)
         self.n_cities = len(distance_matrix)
@@ -210,6 +212,11 @@ class FastAntColonyTSP:
         self.evaporation_rate = evaporation_rate
         self.q = q
         self.symmetric = symmetric
+        self.start_city = start_city
+        
+        # Validate start city
+        if not (0 <= start_city < self.n_cities):
+            raise ValueError(f"start_city must be between 0 and {self.n_cities-1}, got {start_city}")
         
         # Initialize pheromone matrix
         self.pheromones = np.ones((self.n_cities, self.n_cities), dtype=np.float64) / self.n_cities
@@ -221,7 +228,7 @@ class FastAntColonyTSP:
         
         # For sparse graphs
         if use_sparse:
-            large_value = np.percentile(self.distances[finite_mask], 95) if np.any(finite_mask) else 1e6
+            large_value = 128 # np.percentile(self.distances[finite_mask], 95) if np.any(finite_mask) else 1e6
             self.valid_connections = self.distances < large_value
             np.fill_diagonal(self.valid_connections, False)
         else:
@@ -232,6 +239,7 @@ class FastAntColonyTSP:
         self.convergence_data = []
         
         logger.info(f"Initialized ACO with {self.n_ants} ants for {self.n_cities} cities")
+        logger.info(f"Starting city: {self.start_city}")
         logger.info(f"Graph type: {'Symmetric (undirected)' if self.symmetric else 'Asymmetric (directed)'}")
         logger.info(f"Using batch size: {self.batch_size} (numba parallel processing)")
         if use_sparse and hasattr(self, 'valid_connections'):
@@ -254,7 +262,7 @@ class FastAntColonyTSP:
             # Process batch in parallel
             batch_paths, batch_distances = construct_solutions_batch_numba(
                 self.distances, self.pheromones, self.heuristic, 
-                self.n_cities, self.alpha, self.beta, batch_size, seeds
+                self.n_cities, self.alpha, self.beta, batch_size, seeds, self.start_city
             )
             
             # Convert to lists and append
@@ -269,7 +277,7 @@ class FastAntColonyTSP:
         seed = np.random.randint(0, 2**31)
         path_array, distance = construct_single_solution_numba(
             self.distances, self.pheromones, self.heuristic, 
-            self.n_cities, self.alpha, self.beta, seed
+            self.n_cities, self.alpha, self.beta, seed, self.start_city
         )
         return path_array.tolist(), float(distance)
     
@@ -353,7 +361,7 @@ if __name__ == "__main__":
     distances = None
     n = 0
 
-    f = open("hq-matrix")
+    f = open("hq-matrix2")
     for j, line in enumerate(f.readlines()):
         row = re.sub(r'^.*\|', '', line).split()
         if distances is None:
@@ -385,10 +393,10 @@ if __name__ == "__main__":
     total_dist = 0
     for i, p in enumerate(best_path):
         if i < len(best_path) - 1:
-            logger.info(f"{best_path[i]} -> {best_path[i + 1]} dist = {distances[best_path[i]][best_path[i+1]]}")
+            logger.info(f"{best_path[i]} -> {best_path[i + 1]} dist = {distances[best_path[i]][best_path[i+1]]} rev_dist = {distances[best_path[i+1]][best_path[i]]}")
             total_dist += distances[best_path[i]][best_path[i+1]]
         else:
-            logger.info(f"{best_path[i]} -> {best_path[0]} dist = {distances[best_path[0]][best_path[i]]}")
+            logger.info(f"{best_path[i]} -> {best_path[0]} dist = {distances[best_path[i]][best_path[0]]} rev_dist = {distances[best_path[0]][best_path[i]]}")
             total_dist += distances[best_path[i]][best_path[0]]
 
     logger.info(f"Our observed distance (i->j): {total_dist}")
@@ -398,7 +406,7 @@ if __name__ == "__main__":
 
     # set the new ordering
     segments = [None] * n
-    f = open("hq-segs")
+    f = open("hq-segs2")
     for j, line in enumerate(f.readlines()):
         match = re.match(r'.*segment #(.*?) (\d+) -> (\d+)', line)
         seg_id = int(match[1])
